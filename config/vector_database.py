@@ -55,16 +55,12 @@ class VectorTableConfig:
     
     # 모델별 임베딩 테이블 매핑
     MODEL_TABLE_MAP = {
-        EmbeddingModelType.MULTILINGUAL_E5_SMALL: "embeddings_multilingual_e5_small",
-        EmbeddingModelType.KAKAOBANK_DEBERTA: "embeddings_kakaobank",
-        EmbeddingModelType.FINE5_FINANCE: "embeddings_fine5"
+        EmbeddingModelType.MULTILINGUAL_E5_SMALL: "embeddings_e5",
     }
     
     # 모델별 벡터 차원 매핑
     MODEL_DIMENSION_MAP = {
         EmbeddingModelType.MULTILINGUAL_E5_SMALL: 384,
-        EmbeddingModelType.KAKAOBANK_DEBERTA: 768,
-        EmbeddingModelType.FINE5_FINANCE: 4096
     }
     
     # HNSW 인덱스 설정

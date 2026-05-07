@@ -1,8 +1,5 @@
-"""
-Generation module for RAG system
-LLM 기반 답변 생성 모듈
-"""
+"""Generation module for RAG system."""
 
-from .generator import LLMGenerator, OllamaGenerator
+from .generator import Generator
 
-__all__ = ["LLMGenerator", "OllamaGenerator"]
+__all__ = ["Generator"]

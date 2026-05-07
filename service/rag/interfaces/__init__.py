@@ -1,9 +1,5 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-RAG 시스템 인터페이스 모듈
-"""
+"""RAG 인터페이스 모듈."""
 
-from .vector_store import VectorStoreInterface, SearchResult
+from .vector_store import SearchResult, VectorStore
 
-__all__ = ['VectorStoreInterface', 'SearchResult']
+__all__ = ["VectorStore", "SearchResult"]

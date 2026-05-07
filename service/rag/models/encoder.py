@@ -70,14 +70,7 @@ class EmbeddingEncoder:
             else:
                 return extra_params.get("passage_prefix", "") + text
 
-        # 2. FinE5 모델 - E5 계열이므로 prefix 필수
-        elif self.model_type == EmbeddingModelType.FINE5_FINANCE:
-            if is_query:
-                return extra_params.get("query_prefix", "") + text
-            else:
-                return extra_params.get("passage_prefix", "") + text
-
-        # 3. 기타 모델 (KakaoBank DeBERTa 등)
+        # 2. 기타 모델
         else:
             return text
 
@@ -194,7 +187,7 @@ class EmbeddingEncoder:
             "show_progress_bar": show_progress
         }
 
-        # FinE5는 E5 계열이므로 특별한 처리 없음 (prefix만 사용)
+        # 단일 범용 모델 기준 처리
 
         embeddings = self.model.encode(processed_texts, **encode_kwargs)
 
@@ -242,7 +235,7 @@ class EmbeddingEncoder:
                     "return_tensors": "pt"
                 }
 
-                # FinE5는 일반적인 padding 사용
+                # 일반적인 padding 사용
 
                 # Tokenize
                 inputs = self.tokenizer(batch_texts, **tokenize_kwargs).to(self.device)

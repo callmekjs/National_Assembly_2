@@ -2,12 +2,10 @@ from __future__ import annotations
 import streamlit as st
 from collections import namedtuple
 
-PageInfo = namedtuple('PageInfo', ['link', 'label', 'icon'])
+PageInfo = namedtuple("PageInfo", ["link", "label", "icon"])
 PAGE_INFO = {
     "P0": PageInfo(link="app.py", label="홈", icon="🏠"),
-    "P1": PageInfo(link="pages/page1.py", label="스톡버디에게 물어보기", icon="🙋"),
-#     "P2": PageInfo(link="", label="", icon=""),
-#     "P3": PageInfo(link="", label="", icon=""),
+    "P1": PageInfo(link="pages/page1.py", label="회의록 질의", icon="💬"),
     "PDT": PageInfo(link="pages/data_tool.py", label="데이터 도구", icon="🧰"),
 }
 
@@ -72,82 +70,20 @@ def render_page_title(page_info: Any, *, variant: str = "default") -> None:
     st.markdown(f'<h1 class="{title_class}">{page_info.icon}&nbsp;{page_info.label}</h1>', unsafe_allow_html=True)
 
 def render_sidebar():
-    # 공통 페이지 설정
     st.set_page_config(
-        page_title="StockBuddy: Investment Q&A System",
-        page_icon="🤖",
+        page_title="국회 회의록 분석기",
+        page_icon="🏛️",
         layout="wide",
     )
-    
-    st.markdown("""
-    <style>
-    /* 🌟 사이드바 고정 크기 및 정렬 */
-    [data-testid="stSidebar"] {
-        width: 400px !important;
-        min-width: 400px !important;
-        max-width: 400px !important;
-        background-color: #f9fafc !important;
-        color: #111827 !important;
-    }
-
-    /* 🌈 사이드바 내부 중앙 정렬 */
-    [data-testid="stSidebar"] > div:first-child {
-        display: flex;
-        flex-direction: column;
-        align-items: center;     /* 가로 중앙 */
-        text-align: center;      /* 텍스트 중앙 */
-        padding: 1.5rem 1rem;
-    }
-
-    /* 🖼️ 이미지 중앙 정렬 */
-    [data-testid="stSidebar"] .stImage img {
-        position: relative;
-        left: calc(50% - 67px);
-        width: 30px;
-        height: 216px; # 우측 배너 위치와 맞추기
-        object-fit: contain; /* or cover */
-        border-radius: 12px;
-        margin-bottom: 1rem;
-    }
-    /* 💬 헤더 스타일 */
-    [data-testid="stSidebar"] h1, 
-    [data-testid="stSidebar"] h2, 
-    [data-testid="stSidebar"] h3 {
-        text-align: center !important;
-        color: #1e293b !important;
-    }
-
-    /* 📎 구분선과 링크 스타일 */
-    [data-testid="stSidebar"] hr {
-        border: 0;
-        border-top: 1px solid #e2e8f0;
-        width: 80%;
-        margin: 1.2rem auto;
-    }
-
-    [data-testid="stSidebar"] a {
-        text-decoration: none;
-        color: #2563eb !important;
-        font-weight: 600;
-    }
-
-    [data-testid="stSidebar"] a:hover {
-        color: #1d4ed8 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
     _inject_common_styles()
     _hide_builtin_nav()
 
-    """공통 사이드바"""
     with st.sidebar:
-        st.image("assets/img/StockBuddy3.png")
-        # st.image("data/StockBuddy3.png")
-        st.subheader("스톡버디와 함께 투자를 이야기해보세요 💬")
-
+        st.subheader("국회 회의록 분석기")
+        st.caption("회의록 기반 질의응답 및 ETL 실행")
         st.markdown("---")
-        st.markdown("### 📍 페이지 이동")
+        st.markdown("### 페이지 이동")
         st.page_link(PAGE_INFO["P0"].link, label=PAGE_INFO["P0"].label, icon=PAGE_INFO["P0"].icon)
         st.page_link(PAGE_INFO["P1"].link, label=PAGE_INFO["P1"].label, icon=PAGE_INFO["P1"].icon)
         st.page_link(PAGE_INFO["PDT"].link, label=PAGE_INFO["PDT"].label, icon=PAGE_INFO["PDT"].icon)

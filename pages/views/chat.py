@@ -1,11 +1,9 @@
 from __future__ import annotations
 import json
-import re
 import streamlit as st
 from datetime import datetime
 from service.chat_service import ChatService
 from graph.app_graph import build_app
-from pages.views.user_level_summary import render_user_level_summary
 
 
 def change_chat_theme() -> None:
@@ -70,22 +68,19 @@ def change_chat_theme() -> None:
 # 예상 질문 목록 (레벨별)
 SUGGESTED_QUESTIONS = {
     "beginner": [
-        "📺 제일기획이 2025년 1분기에 올린 연결 영업수익이 얼마인지 숫자만 쉽게 알려줘.",
-        "💼 유화증권이 2024년에 영업으로 번 돈(영업수익)과 남은 순이익이 각각 얼마인지 쉬운 말로 설명해줘.",
-        "💉 녹십자가 2024년 보고서에서 혈액제제가 매출에서 차지한 비중이 몇 퍼센트인지 알려줘.",
-        "🏠 벽산이 2024년에 기록한 매출액이 얼마였고 전년도와 비교해 얼마나 달랐는지 간단히 말해줘.",
+        "외교통일위원회 최근 회의의 핵심 쟁점을 쉽게 요약해줘.",
+        "특정 회의록에서 누가 어떤 발언을 했는지 알려줘.",
+        "최근 회의 일정과 안건 흐름을 간단히 정리해줘.",
     ],
     "intermediate": [
-        "🔋 금양 2024년 자료에서 발포제 부문 총매출액과 이차전지 부문 영업손익이 각각 얼마인지 비교해줘.",
-        "⚙️ 두산에너빌리티가 2024년에 체결한 Taiba & Qassim 신규 수주 계약금액이 얼마인지 알려줘.",
-        "📱 삼성전자가 2025년 1분기에 DX 부문과 DS 부문에서 각각 얼마나 영업이익을 냈는지 비교해줘.",
-        "🚗 삼성화재가 2025년 1분기에 보고한 일반보험·자동차보험·장기보험 보험수익이 각각 얼마인지 정리해줘.",
+        "같은 안건이 여러 회의에서 어떻게 이어졌는지 비교해줘.",
+        "쟁점별로 여야 발언 경향을 정리해줘.",
+        "회의록 근거 문장과 함께 요약해줘.",
     ],
     "advanced": [
-        "🏗️ 삼성물산의 2024년 전체 매출액과 각 사업부 매출 비중을 활용해서 건설부문과 상사부문의 매출 금액을 계산하고 두 부문 비중 차이도 구해줘.",
-        "🛠️ 두산밥캣이 2024년에 공시한 제품별 매출에서 Compact Equipment와 Material Handling 매출액, 그리고 비중 차이가 몇 %포인트인지 계산해줘.",
-        "💰 삼성생명이 2024년 말 기준으로 밝힌 총자산 249조 3,252억원과 운용자산 243조 2,992억원을 이용해 자산운용률 97.58%가 맞는지 검산해줘.",
-        "🛳️ 삼성중공업이 공시에서 언급한 2024년 2월 LNG선 15척 수주(4조6천억원)와 2024년 11월 컨테이너선 4척 수주(1조원)를 합산하면 총 수주 규모가 얼마인지 정리해줘.",
+        "특정 기간 회의록에서 외교 현안의 논점 변화를 추적해줘.",
+        "주요 발언자별 주장 패턴을 비교해줘.",
+        "위원회별 의제 유사도를 근거와 함께 설명해줘.",
     ],
 }
 
@@ -184,7 +179,7 @@ def _init_state() -> None:
         st.session_state.current_session_id = None
         _load_saved_sessions()
     if "user_level" not in st.session_state:
-        st.session_state.user_level = st.session_state.get("user_level") or "biginner"
+        st.session_state.user_level = st.session_state.get("user_level") or "beginner"
     if not st.session_state.current_session_id or st.session_state.current_session_id not in st.session_state.chat_sessions:
         _create_new_session()
 
@@ -228,7 +223,7 @@ def _create_new_session() -> None:
         chat_service.add_message(
             session_id,
             "assistant",
-            "안녕하세요! 투자 관련 궁금한 점을 언제든 물어보세요. 위 버튼을 클릭하거나 직접 질문을 입력해주세요! 😊"
+            "안녕하세요! 국회 회의록 관련 질문을 입력해 주세요."
         )
         
         # 세션 상태에 추가
@@ -238,7 +233,7 @@ def _create_new_session() -> None:
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "안녕하세요! 투자 관련 궁금한 점을 언제든 물어보세요. 위 버튼을 클릭하거나 직접 질문을 입력해주세요! 😊",
+                    "content": "안녕하세요! 국회 회의록 관련 질문을 입력해 주세요.",
                     "timestamp": datetime.now().isoformat()
                 }
             ]
@@ -354,13 +349,13 @@ def _format_langgraph_response(state: dict) -> str:
     if citations:
         lines = ["\n\n📚 참고 자료"]
         for item in citations:
-            corp_name = item.get("corp_name") or ""
+            committee = item.get("committee") or ""
             document_name = item.get("document_name") or ""
-            title = item.get("title") or document_name or corp_name or "출처 미상"
-            date = item.get("date") or item.get("rcept_dt") or "날짜 미상"
-            report_id = item.get("report_id") or corp_name or item.get("chunk_id") or "ref"
+            title = item.get("title") or document_name or committee or "출처 미상"
+            date = item.get("date") or item.get("meeting_date") or "날짜 미상"
+            ref_id = item.get("source_id") or item.get("chunk_id") or "ref"
             url = item.get("url", "")
-            line = f"- {title} ({date}) [{report_id}]"
+            line = f"- {title} ({date}) [{ref_id}]"
             if url:
                 line += f" {url}"
             lines.append(line)
