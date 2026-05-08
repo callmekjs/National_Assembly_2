@@ -30,6 +30,39 @@ def _normalize_text(text: str) -> str:
     return text.strip()
 
 
+def _first_match(pattern: str, text: str) -> str:
+    m = re.search(pattern, text, flags=re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
+def _normalize_metadata(metadata: dict, text: str) -> dict:
+    md = dict(metadata or {})
+
+    # speaker fallback: 회의록 본문에서 "◯위원장/◯소위원장 ..." 패턴 우선 추출
+    speaker = str(md.get("speaker", "")).strip()
+    if not speaker:
+        speaker = _first_match(r"◯\s*([^\s\n()]+)", text)
+        if speaker:
+            md["speaker"] = speaker
+
+    # committee fallback: 헤더의 "...위원회회의록"에서 추출
+    committee = str(md.get("committee", "")).strip()
+    if not committee:
+        committee = _first_match(r"([가-힣A-Za-z0-9·]+위원회)회의록", text)
+        if committee:
+            md["committee"] = committee
+
+    # meeting_date fallback: "YYYY년M월D일"을 표준 형식으로 정규화
+    meeting_date = str(md.get("meeting_date", "")).strip()
+    if not meeting_date:
+        d = re.search(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일", text)
+        if d:
+            yyyy, mm, dd = d.group(1), int(d.group(2)), int(d.group(3))
+            md["meeting_date"] = f"{yyyy}-{mm:02d}-{dd:02d}"
+
+    return md
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUT_DIR / "normalized.jsonl"
@@ -47,6 +80,7 @@ def main() -> None:
             row["text"] = _normalize_text(str(row.get("text", "")))
             if not row["text"]:
                 continue
+            row["metadata"] = _normalize_metadata(row.get("metadata", {}), row["text"])
             out.write(json.dumps(row, ensure_ascii=False) + "\n")
             count += 1
     print(f"[normalizer] normalized={count} -> {out_path}")

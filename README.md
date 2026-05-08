@@ -120,6 +120,31 @@ streamlit run app.py
 - 상단: 답변(요약)
 - 하단: 근거 목록(`[1] source=... date=... quote=...`)
 
+### v0 실행 순서 (5줄)
+
+```powershell
+docker-compose up -d
+.\.venv\Scripts\python.exe -m service.etl.extractor.extractor
+.\.venv\Scripts\python.exe -m service.etl.transform.pipeline
+.\.venv\Scripts\python.exe -m service.etl.loader.loader_cli load doc --jsonl-dir data/transform/final; .\.venv\Scripts\python.exe -m service.etl.loader.loader_cli load vector
+.\.venv\Scripts\python.exe -m service.rag.qa_demo --query "대북정책 핵심 쟁점을 요약해줘" --top-k 20 --return-k 5 --committee "외교통일위원회" --alpha 0.75 --use-reranker --balance-speakers --pg-port 5433
+```
+
+### 필수 환경변수/포트
+
+- `PG_PORT=5433` (이 프로젝트 DB 컨테이너 포트)
+- `OPENAI_API_KEY` (LLM 답변 생성 시 필요)
+- 기본 DB 접속값: `PG_HOST=localhost`, `PG_DB=skn_project`, `PG_USER=postgres`
+
+### 자주 나는 오류와 해결 (Top 3)
+
+1. `ModuleNotFoundError: No module named 'rag'`
+   - 해결: `python -m service.rag...` 형태로 실행 (`rag` 대신 `service.rag`)
+2. `relation "embeddings_e5" does not exist`
+   - 해결: `db create` + `load doc` + `load vector` 순서로 재실행
+3. `connection ... port 5432 failed`
+   - 해결: 다른 로컬 Postgres와 충돌 가능성 높음, `PG_PORT=5433`로 고정
+
 ---
 
 ## 프로젝트 구조
