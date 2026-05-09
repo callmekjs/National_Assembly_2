@@ -1,4 +1,12 @@
 from __future__ import annotations
+
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+_dt_root = Path(__file__).resolve().parents[1]
+load_dotenv(_dt_root / ".env", override=True)
+
 import subprocess
 import sys
 from datetime import datetime
@@ -6,10 +14,6 @@ from pathlib import Path
 import streamlit as st
 from pages.app_bootstrap import render_sidebar, render_page_title, PAGE_INFO
 
-# =========================
-# 공통 페이지 설정
-# =========================
-st.set_page_config(page_title="국회 회의록 분석기", page_icon="🏛️", layout="wide")
 render_sidebar()
 render_page_title(PAGE_INFO["PDT"], variant="compact")
 

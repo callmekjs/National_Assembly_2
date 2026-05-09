@@ -1,0 +1,32 @@
+{
+  "total_queries": 10,
+  "passed": 9,
+  "score_percent": 90.0,
+  "top_k": 3,
+  "per_type": {
+    "classification": {
+      "total": 3,
+      "passed": 2,
+      "score_percent": 66.7,
+      "recall@3": 66.7,
+      "mrr@3": 0.667
+    },
+    "comparative": {
+      "total": 3,
+      "passed": 3,
+      "score_percent": 100.0,
+      "recall@3": 100.0,
+      "mrr@3": 0.333
+    },
+    "summary": {
+      "total": 4,
+      "passed": 4,
+      "score_percent": 100.0,
+      "recall@3": 100.0,
+      "mrr@3": 1.0
+    }
+  },
+  "expected_labeled_queries": 5,
+  "recall@3": 80.0,
+  "mrr@3": 0.667
+}

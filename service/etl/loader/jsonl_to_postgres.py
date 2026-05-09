@@ -26,6 +26,7 @@ def load_jsonl_files(jsonl_dir: Path, batch_size: int = 1000) -> bool:
 
     conn = _connect()
     conn.autocommit = False
+    total_rows = 0
     try:
         with conn.cursor() as cur:
             for file_path in files:
@@ -45,10 +46,13 @@ def load_jsonl_files(jsonl_dir: Path, batch_size: int = 1000) -> bool:
                         )
                         if len(rows) >= batch_size:
                             _insert_rows(cur, rows)
+                            total_rows += len(rows)
                             rows.clear()
                 if rows:
                     _insert_rows(cur, rows)
+                    total_rows += len(rows)
         conn.commit()
+        print(f"[load_doc] upsert_rows={total_rows} (ON CONFLICT update)")
         return True
     except Exception:
         conn.rollback()

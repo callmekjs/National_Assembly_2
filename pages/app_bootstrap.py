@@ -1,6 +1,8 @@
 from __future__ import annotations
+
 import streamlit as st
 from collections import namedtuple
+from typing import Any
 
 PageInfo = namedtuple("PageInfo", ["link", "label", "icon"])
 PAGE_INFO = {
@@ -71,7 +73,7 @@ def render_page_title(page_info: Any, *, variant: str = "default") -> None:
 
 def render_sidebar():
     st.set_page_config(
-        page_title="국회 회의록 분석기",
+        page_title="국회 회의록 근거 기반 질의응답",
         page_icon="🏛️",
         layout="wide",
     )
@@ -80,8 +82,8 @@ def render_sidebar():
     _hide_builtin_nav()
 
     with st.sidebar:
-        st.subheader("국회 회의록 분석기")
-        st.caption("회의록 기반 질의응답 및 ETL 실행")
+        st.subheader("국회 회의록 RAG")
+        st.caption("메인: 근거 기반 LLM 질의 · 전제: 회의록 ETL·검색")
         st.markdown("---")
         st.markdown("### 페이지 이동")
         st.page_link(PAGE_INFO["P0"].link, label=PAGE_INFO["P0"].label, icon=PAGE_INFO["P0"].icon)

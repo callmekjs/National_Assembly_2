@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import requests
 
 
 class Generator:
-    def _build_citations(self, retrieved: list[dict[str, Any]], max_items: int = 3) -> str:
+    def _build_citations(self, retrieved: list[dict[str, Any]], max_items: int = 5) -> str:
         lines: list[str] = []
         for idx, item in enumerate(retrieved[:max_items], start=1):
             source_id = item.get("source_id", "")
@@ -15,6 +16,18 @@ class Generator:
             quote = (item.get("content", "") or "").replace("\n", " ").strip()[:140]
             lines.append(f"[{idx}] source={source_id} date={date} quote={quote}")
         return "\n".join(lines)
+
+    def _sanitize_invalid_citations(self, answer: str, max_ref: int) -> str:
+        if not answer or max_ref <= 0:
+            return answer
+
+        def _replace(match: re.Match[str]) -> str:
+            ref_no = int(match.group(1))
+            return match.group(0) if 1 <= ref_no <= max_ref else ""
+
+        cleaned = re.sub(r"\[(\d+)\]", _replace, answer)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip()
 
     def _generate_with_openai(self, question: str, context: str) -> str:
         api_key = os.getenv("OPENAI_API_KEY", "").strip()
@@ -55,10 +68,11 @@ class Generator:
     def generate_with_citations(self, question: str, retrieved: list[dict[str, Any]]) -> str:
         if not retrieved:
             return "관련 문서를 찾지 못했습니다."
+        max_ref = min(5, len(retrieved))
         context = "\n\n".join(
             f"[{i+1}] source={r.get('source_id','')} date={r.get('date','')}\n{(r.get('content','') or '')[:800]}"
             for i, r in enumerate(retrieved[:5])
         )
-        answer = self.generate(question, context)
-        citations = self._build_citations(retrieved)
+        answer = self._sanitize_invalid_citations(self.generate(question, context), max_ref)
+        citations = self._build_citations(retrieved, max_items=max_ref)
         return f"{answer}\n\n근거:\n{citations}"

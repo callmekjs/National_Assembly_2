@@ -1,21 +1,31 @@
-# service/llm_client.py
-import os, sys
-from typing import Optional, List, Dict
-from dotenv import load_dotenv
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel  # ← 핵심: AutoPeft 대신 명시 적용
+# service/llm/llm_client.py
+"""Generate 노드에서 쓰는 통합 chat().
 
+OPENAI_API_KEY가 있으면 OpenAI Chat Completions를 우선 사용하고,
+없거나 실패 시 로컬 HF(LoRA)로 폴백한다."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Dict
+
+import requests
+import torch
+from dotenv import load_dotenv
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+
+_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_ROOT / ".env", override=True)
 load_dotenv()
 
-# 오프라인 강제(사전 다운로드 했으므로 안전)
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
-
-HF_REPO_ID    = os.getenv("MODEL_DIR_ADAPTER", "./models/adapters/llama3.2-3b-ko-report-lora")  # LoRA 경로(로컬)
-HF_BASE_MODEL = os.getenv("MODEL_DIR_BASE", "./models/base/Llama-3.2-3B")              # 베이스 경로(로컬)
-HF_TRUST      = os.getenv("HF_TRUST_REMOTE_CODE", "false").lower() == "true"
-HF_TOKEN      = os.getenv("HUGGINGFACE_HUB_TOKEN")     # 오프라인이면 없어도 됨
+HF_REPO_ID = os.getenv("MODEL_DIR_ADAPTER", "./models/adapters/llama3.2-3b-ko-report-lora")
+HF_BASE_MODEL = os.getenv("MODEL_DIR_BASE", "./models/base/Llama-3.2-3B")
+HF_TRUST = os.getenv("HF_TRUST_REMOTE_CODE", "false").lower() == "true"
+HF_TOKEN = os.getenv("HUGGINGFACE_HUB_TOKEN")
 
 IS_RUNPOD = os.getenv("IS_RUNPOD", "false").lower() == "true"
 
@@ -28,16 +38,21 @@ else:
     HF_DTYPE = os.getenv("HF_DTYPE", "float32")
     HF_4BIT = os.getenv("HF_4BIT", "false").lower() == "true"
 
-print("[LLM] HF_REPO_ID =", HF_REPO_ID)
-print("[LLM] HF_BASE_MODEL =", HF_BASE_MODEL)
-print("[LLM] CWD =", os.getcwd(), file=sys.stderr)
-
 _tokenizer = None
 _model = None
 
+
+def _openai_key() -> str:
+    return (os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def _use_openai() -> bool:
+    if (os.getenv("FORCE_LOCAL_LLM") or "").lower() in ("1", "true", "yes"):
+        return False
+    return bool(_openai_key())
+
+
 def _torch_dtype():
-    """환경 설정에 맞는 torch dtype을 반환 (CPU면 float32 강제)"""
-    # CPU면 float32로 강제 (bf16/float16 미지원 환경 방지)
     if HF_DEVICE_MAP == "cpu":
         return torch.float32
     return {
@@ -46,12 +61,12 @@ def _torch_dtype():
         "float32": torch.float32,
     }.get(HF_DTYPE, torch.bfloat16)
 
+
 def _hf_auth_kwargs() -> Dict[str, str]:
-    """허깅페이스 인증 토큰이 있을 경우 kwargs 형태로 반환"""
     return {"token": HF_TOKEN} if HF_TOKEN else {}
 
+
 def _load_tokenizer(path_or_id: str):
-    """지정된 경로에서 토크나이저를 로드"""
     return AutoTokenizer.from_pretrained(
         path_or_id,
         use_fast=True,
@@ -59,36 +74,26 @@ def _load_tokenizer(path_or_id: str):
         **_hf_auth_kwargs(),
     )
 
+
 def _load_model_lora(base_path: str, lora_path: str):
-    """베이스 모델을 로드하고 LoRA 어댑터를 적용해 파인튜닝 모델 생성"""
-    kwargs = {}
     if HF_4BIT:
         from transformers import BitsAndBytesConfig
-        kwargs["quantization_config"] = BitsAndBytesConfig(load_in_4bit=True)
-        kwargs["device_map"] = "auto"
-    else:
-        # kwargs["torch_dtype"] = _torch_dtype()
-        kwargs["dtype"] = _torch_dtype()
-        kwargs["device_map"] = HF_DEVICE_MAP
 
-    # 1) 베이스 모델(로컬 경로) 로드
-    """
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_path,
-        trust_remote_code=HF_TRUST,
-        low_cpu_mem_usage=True,             # ← 추가
-        **_hf_auth_kwargs(),
-        **kwargs,
-    )
-    """
-    base_model = AutoModelForCausalLM.from_pretrained(
-        base_path,
-        trust_remote_code=HF_TRUST,
-        device_map=HF_DEVICE_MAP,
-        torch_dtype=_torch_dtype(),  # 또는 dtype=_torch_dtype() (버전 호환성)
-        **_hf_auth_kwargs(),
-    )
-    # 2) 어댑터(로컬 경로) 적용
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_path,
+            trust_remote_code=HF_TRUST,
+            quantization_config=BitsAndBytesConfig(load_in_4bit=True),
+            device_map="auto",
+            **_hf_auth_kwargs(),
+        )
+    else:
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_path,
+            trust_remote_code=HF_TRUST,
+            device_map=HF_DEVICE_MAP,
+            torch_dtype=_torch_dtype(),
+            **_hf_auth_kwargs(),
+        )
     model = PeftModel.from_pretrained(
         base_model,
         lora_path,
@@ -97,17 +102,18 @@ def _load_model_lora(base_path: str, lora_path: str):
     model.eval()
     return model
 
+
 def _load():
-    """토크나이저와 LoRA 적용 모델을 지연 로딩 후 캐싱"""
     global _tokenizer, _model
     if _tokenizer is not None and _model is not None:
         return _tokenizer, _model
 
-    # 로컬 경로 사용 전제(B 방식): tokenizer는 베이스에서 로드
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+
     _tokenizer = _load_tokenizer(HF_BASE_MODEL)
     _model = _load_model_lora(HF_BASE_MODEL, HF_REPO_ID)
 
-    # pad_token 없으면 eos로 보정
     if _tokenizer.pad_token_id is None and _tokenizer.eos_token_id is not None:
         _tokenizer.pad_token = _tokenizer.eos_token
 
@@ -120,15 +126,15 @@ def _load():
 
     return _tokenizer, _model
 
+
 def _apply_chat_template_safe(tokenizer, messages) -> torch.Tensor:
-    """chat_template 적용 실패 시 수동 포맷으로 프롬프트를 구성"""
     try:
         return tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
         )
     except Exception:
-        system = next((m["content"] for m in messages if m["role"]=="system"), "")
-        user   = next((m["content"] for m in messages if m["role"]=="user"), "")
+        system = next((m["content"] for m in messages if m["role"] == "system"), "")
+        user = next((m["content"] for m in messages if m["role"] == "user"), "")
         prompt = f"""[INST] <<SYS>>
 {system.strip()}
 <</SYS>>
@@ -137,12 +143,36 @@ def _apply_chat_template_safe(tokenizer, messages) -> torch.Tensor:
 """
         return tokenizer(prompt, return_tensors="pt").input_ids
 
-def chat(system: str, user: str, max_tokens: int = 512) -> str:
-    """
-    LangGraph Generate 노드에서 호출되는 함수.
-    system: 시스템 규칙/역할 (레벨별 템플릿 포함)
-    user  : 사용자 질문 + 컨텍스트
-    """
+
+def _chat_openai(system: str, user: str, max_tokens: int) -> str:
+    api_key = _openai_key()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY 없음")
+
+    base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+    url = f"{base}/chat/completions"
+    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system.strip()},
+            {"role": "user", "content": user.strip()},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.7,
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
+    resp.raise_for_status()
+    data = resp.json()
+    return str(data["choices"][0]["message"]["content"]).strip()
+
+
+def _chat_local_hf(system: str, user: str, max_tokens: int) -> str:
+    print("[LLM] HF_REPO_ID =", HF_REPO_ID, file=sys.stderr)
+    print("[LLM] HF_BASE_MODEL =", HF_BASE_MODEL, file=sys.stderr)
+    print("[LLM] CWD =", os.getcwd(), file=sys.stderr)
+
     tokenizer, model = _load()
 
     messages = [
@@ -158,15 +188,40 @@ def chat(system: str, user: str, max_tokens: int = 512) -> str:
         attention_mask=attention_mask,
         max_new_tokens=max_tokens,
         do_sample=True,
-        # temperature=0.3,
-        # top_p=0.3,
         temperature=0.7,
         top_p=0.9,
         pad_token_id=tokenizer.eos_token_id,
         eos_token_id=tokenizer.eos_token_id,
-        # .env의 IS_RUNPOD 값에 따라 KV-cache 사용 여부 결정
-        use_cache = True if os.environ.get("IS_RUNPOD", "False").lower() == "true" else False,
+        use_cache=os.environ.get("IS_RUNPOD", "False").lower() == "true",
     )
     output_ids = gen_out[0][input_ids.shape[-1]:]
-    text = tokenizer.decode(output_ids, skip_special_tokens=True).strip()
-    return text
+    return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+
+def chat(system: str, user: str, max_tokens: int = 512) -> str:
+    """
+    OPENAI_API_KEY + (FORCE_LOCAL_LLM 아님) → OpenAI.
+    실패 시 로컬 HF(OPENAI_ONLY=1 이면 짧은 오류 문자열만 반환).
+
+    로컬만: FORCE_LOCAL_LLM=1 또는 키 미설정.
+    """
+    if _use_openai():
+        try:
+            print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
+            return _chat_openai(system, user, max_tokens)
+        except Exception as exc:
+            print(f"[LLM] OpenAI 실패: {exc}", file=sys.stderr)
+            if (os.getenv("OPENAI_ONLY") or "").lower() in ("1", "true", "yes"):
+                return (
+                    "OpenAI API 호출에 실패했습니다. 키·네트워크·`OPENAI_BASE_URL`을 확인하거나 "
+                    "잠시 후 다시 시도해 주세요."
+                )
+
+    try:
+        print("[LLM] backend=local_hf", file=sys.stderr)
+        return _chat_local_hf(system, user, max_tokens)
+    except Exception as exc:
+        return (
+            "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
+            f"({exc}) `.env`에 `OPENAI_API_KEY`를 설정하면 OpenAI로 생성할 수 있습니다."
+        )

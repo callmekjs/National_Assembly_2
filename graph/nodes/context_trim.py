@@ -13,6 +13,7 @@ def run(state: QAState) -> QAState:
             "url": d.get("url", ""),
             "title": d.get("title", ""),
             "chunk_id": d.get("chunk_id", ""),
+            "quote": (d.get("chunk_text", "") or "").replace("\n", " ").strip()[:140],
         }
         for d in docs[:5]
     ]

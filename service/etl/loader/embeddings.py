@@ -24,7 +24,9 @@ def run(limit: int | None = None, batch_size: int = 100) -> None:
         chunk_ids = [row[0] for row in batch]
         texts = [row[1] for row in batch]
         vectors = encoder.encode_documents(texts, batch_size=len(texts))
-        store.insert_embeddings(EmbeddingModelType.MULTILINGUAL_E5_SMALL, chunk_ids, vectors)
+        n = store.insert_embeddings(EmbeddingModelType.MULTILINGUAL_E5_SMALL, chunk_ids, vectors)
+        print(f"[load_vector] batch {i // batch_size + 1}: embeddings_upsert={n}")
+    print(f"[load_vector] done total_chunks={len(rows)}")
 
 
 def main() -> None:

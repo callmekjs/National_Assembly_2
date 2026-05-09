@@ -63,6 +63,34 @@ def _fallback_answer(question: str, context: str) -> str:
     )
 
 
+def _build_numbered_context(state: QAState) -> str:
+    """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다."""
+    docs = state.get("reranked") or state.get("retrieved") or []
+    sections: list[str] = []
+    for idx, doc in enumerate(docs[:5], start=1):
+        body = (doc.get("chunk_text") or "").strip()
+        if not body:
+            continue
+        source_id = doc.get("source_id") or "source 미상"
+        date = doc.get("date") or "날짜 미상"
+        sections.append(f"[{idx}] source={source_id} date={date}\n{body}")
+    return "\n\n".join(sections)
+
+
+def _sanitize_invalid_citations(answer: str, max_ref: int) -> str:
+    """존재하지 않는 인용 번호([n])를 제거한다."""
+    if not answer or max_ref <= 0:
+        return answer
+
+    def _replace(match: re.Match[str]) -> str:
+        ref_no = int(match.group(1))
+        return match.group(0) if 1 <= ref_no <= max_ref else ""
+
+    cleaned = re.sub(r"\[(\d+)\]", _replace, answer)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def run(state: QAState) -> QAState:
     """
     역할:
@@ -86,7 +114,8 @@ def run(state: QAState) -> QAState:
         # 1. 입력값 추출
         user_level = state.get("user_level", "intermediate")  # 유저 전문성 수준
         question = state.get("question", "")                  # 질문 텍스트
-        context = state.get("context", "")                    # RAG 검색 컨텍스트
+        context = _build_numbered_context(state) or state.get("context", "")  # RAG 검색 컨텍스트
+        max_ref = len(state.get("citations", []))
 
         print(f"[Generate] start (level={user_level}, ctx_len={len(context)})")
 
@@ -100,6 +129,7 @@ def run(state: QAState) -> QAState:
             user=user_prompt,
             max_tokens=512,
         )
+        answer = _sanitize_invalid_citations(answer, max_ref)
         state["draft_answer"] = answer
 
         print(f"[Generate] complete (answer_chars={len(answer)})")

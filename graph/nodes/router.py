@@ -20,7 +20,9 @@ def run(state: QAState) -> QAState:
         lvl = "beginner"
     logger.info("Router start (requested_level=%s)", state.get("user_level"))
     state["user_level"] = lvl
-    state["meta"] = defaults(lvl)
+    incoming = state.get("meta")
+    incoming = incoming if isinstance(incoming, dict) else {}
+    state["meta"] = {**defaults(lvl), **incoming}
     logger.info(
         "Router complete → level=%s, meta=%s",
         lvl,

@@ -102,13 +102,15 @@ def render_chat_panel() -> None:
     _init_state()
     
     # 대화창 관리 사이드바를 맨 먼저 렌더링 (상단에 위치)
-    _render_chat_sessions_sidebar()
+    _render_sidebar()
     
     # # 현재 대화창 제목 표시
     current_session = st.session_state.chat_sessions[st.session_state.current_session_id]
     current_history = current_session['messages']
     if len(current_history) <= 1:
         _render_suggested_questions()
+
+    st.caption("답변이 출력되면 맨 아래 **참고 자료** 블록에서 출처 번호 `[n]`과 인용 형식을 확인할 수 있습니다.")
 
     # 채팅 메시지 표시
     chat_container = st.container()
@@ -180,14 +182,118 @@ def _init_state() -> None:
         _load_saved_sessions()
     if "user_level" not in st.session_state:
         st.session_state.user_level = st.session_state.get("user_level") or "beginner"
+    defaults = [
+        ("qa_top_k", 8),
+        ("qa_alpha", 0.75),
+        ("qa_candidate_multiplier", 50),
+        ("qa_use_reranker", False),
+        ("qa_balance_speakers", False),
+    ]
+    for key, val in defaults:
+        if key not in st.session_state:
+            st.session_state[key] = val
+    if "qa_committee" not in st.session_state:
+        st.session_state.qa_committee = "외교통일위원회"
+    if "qa_date_from" not in st.session_state:
+        st.session_state.qa_date_from = ""
+    if "qa_date_to" not in st.session_state:
+        st.session_state.qa_date_to = ""
     if not st.session_state.current_session_id or st.session_state.current_session_id not in st.session_state.chat_sessions:
         _create_new_session()
 
 
-def _render_chat_sessions_sidebar() -> None:
-    """대화창 관리 사이드바 - 상단에 위치"""
+def _build_search_meta_from_session() -> dict:
+    return {
+        "top_k": int(st.session_state.get("qa_top_k", 8)),
+        "alpha": float(st.session_state.get("qa_alpha", 0.75)),
+        "committee": str(st.session_state.get("qa_committee", "") or "").strip(),
+        "date_from": str(st.session_state.get("qa_date_from", "") or "").strip(),
+        "date_to": str(st.session_state.get("qa_date_to", "") or "").strip(),
+        "use_reranker": bool(st.session_state.get("qa_use_reranker", False)),
+        "balance_speakers": bool(st.session_state.get("qa_balance_speakers", False)),
+        "candidate_multiplier": int(st.session_state.get("qa_candidate_multiplier", 50)),
+    }
+
+
+def _format_user_error(exc: BaseException) -> tuple[str, str]:
+    """(사용자용 짧은 메시지, 상세/재시도 안내)"""
+    raw = str(exc).strip()
+    lower = raw.lower()
+    if "connection refused" in lower or "could not connect" in lower:
+        return (
+            "데이터베이스에 연결할 수 없습니다.",
+            "Docker Postgres가 실행 중인지 확인하세요. Windows에서는 `PG_PORT=5433`이 맞는지 확인한 뒤 같은 질문을 다시 보내 보세요.",
+        )
+    if "embeddings_e5" in lower and ("does not exist" in lower or "undefinedtable" in lower):
+        return (
+            "벡터 테이블이 없거나 다른 DB에 연결된 상태입니다.",
+            "`python -m service.etl.loader.loader_cli load doc …` 후 `load vector`를 실행했는지, `PG_PORT`가 프로젝트 DB 포트와 같은지 확인하세요. 자세한 내용은 저장소의 `OPERATIONS.md`를 참고하세요.",
+        )
+    if "operationalerror" in lower or "psycopg2" in lower:
+        return (
+            "DB 작업 중 오류가 발생했습니다.",
+            "포트·비밀번호·DB 이름이 맞는지 확인하고, 잠시 후 다시 시도하세요.",
+        )
+    return (
+        "답변을 준비하는 중 문제가 발생했습니다.",
+        f"재시도: 같은 질문을 한 번 더 보내 보세요. 문제가 계속되면 페이지를 새로고침(F5) 후 다시 시도하세요.",
+    )
+
+
+def _render_sidebar() -> None:
+    """대화 및 검색 설정 사이드바"""
     with st.sidebar:
-        # 대화창 관리를 맨 위로 이동
+        with st.expander("검색·답변 설정", expanded=True):
+            st.selectbox(
+                "답변 난이도",
+                options=["beginner", "intermediate", "advanced"],
+                format_func=lambda k: LEVEL_LABEL.get(k, k),
+                key="user_level",
+            )
+            st.slider(
+                "검색 문서 개수 (top-k)",
+                min_value=3,
+                max_value=20,
+                key="qa_top_k",
+                help="한 번에 가져올 유사 회의록 청크 수입니다.",
+            )
+            st.slider(
+                "벡터·키워드 가중치",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                key="qa_alpha",
+                help="1에 가까울수록 벡터 유사도 비중이 큽니다.",
+            )
+            st.text_input(
+                "위원회 필터 (정확히 일치)",
+                key="qa_committee",
+                placeholder="예: 외교통일위원회",
+                help="비우면 위원회 필터 없이 검색합니다.",
+            )
+            c1, c2 = st.columns(2)
+            with c1:
+                st.text_input("회의일 시작", key="qa_date_from", placeholder="YYYY-MM-DD")
+            with c2:
+                st.text_input("회의일 종료", key="qa_date_to", placeholder="YYYY-MM-DD")
+            st.checkbox(
+                "재순위화(rerank) 사용",
+                key="qa_use_reranker",
+                help="켜면 일부 회의청크가 순위에서 밀릴 수 있습니다. 회귀 평가·특정 날 일정 회의 검색에는 끔을 권장합니다.",
+            )
+            st.checkbox(
+                "발언자 균형",
+                key="qa_balance_speakers",
+                help="발언자를 골고루 섞으며, 순위 재배열로 관련 청크가 밀릴 수 있습니다.",
+            )
+            st.number_input(
+                "초기 후보 배수",
+                min_value=1,
+                max_value=80,
+                key="qa_candidate_multiplier",
+                help="벡터 검색 초기 후보를 top-k×배수만큼 넓힌 뒤 하이브리드로 줄입니다. 긴 회의·후반 청크는 값이 너무 작으면 누락됩니다.",
+            )
+
         st.markdown("## 💬 대화창 관리")
         
         # 기존 대화 목록
@@ -223,7 +329,7 @@ def _create_new_session() -> None:
         chat_service.add_message(
             session_id,
             "assistant",
-            "안녕하세요! 국회 회의록 관련 질문을 입력해 주세요."
+                "안녕하세요! 왼쪽에서 검색 범위(위원회·날짜 등)를 조정한 뒤, 아래에 질문을 입력해 주세요. 답변 맨 아래에 참고 자료가 붙습니다."
         )
         
         # 세션 상태에 추가
@@ -233,7 +339,7 @@ def _create_new_session() -> None:
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "안녕하세요! 국회 회의록 관련 질문을 입력해 주세요.",
+                    "content": "안녕하세요! 왼쪽에서 검색 범위(위원회·날짜 등)를 조정한 뒤, 아래에 질문을 입력해 주세요. 답변 맨 아래에 참고 자료가 붙습니다.",
                     "timestamp": datetime.now().isoformat()
                 }
             ]
@@ -261,16 +367,19 @@ def _handle_user_input(user_input: str) -> None:
     _append_message("user", user_input)
     try:
         app = _get_langgraph_app()
-        user_level = st.session_state.get("user_level", "intermediate")
-        with st.spinner("답변을 준비하고 있습니다..."):
-            lg_state = app.invoke({"question": user_input, "user_level": user_level})
+        user_level = str(st.session_state.get("user_level", "intermediate")).lower()
+        meta = _build_search_meta_from_session()
+        with st.spinner("회의록을 검색하고 답변을 작성하는 중입니다..."):
+            lg_state = app.invoke({"question": user_input, "user_level": user_level, "meta": meta})
         assistant_reply = _format_langgraph_response(lg_state)
         st.session_state["latest_langgraph_state"] = lg_state
         print(f"[Chat] assistant_reply={assistant_reply[:200]!r}")
         _append_message("assistant", assistant_reply)
     except Exception as exc:
-        _append_message("assistant", "죄송합니다. 답변 생성 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
-        st.warning(f"LangGraph 실행 오류: {exc}")
+        short, detail = _format_user_error(exc)
+        _append_message("assistant", f"{short}\n\n{detail}")
+        with st.expander("기술적인 오류 내용"):
+            st.code(str(exc))
 
     current_session = st.session_state.chat_sessions[st.session_state.current_session_id]
     if len(current_session['messages']) == 3:
@@ -342,20 +451,35 @@ def _get_langgraph_app():
     return st.session_state.langgraph_app
 
 def _format_langgraph_response(state: dict) -> str:
+    docs = state.get("reranked") or state.get("retrieved") or []
+    if not docs:
+        return (
+            "관련 회의록을 찾지 못했습니다.\n\n"
+            "**다음을 시도해 보세요.**\n"
+            "- 왼쪽에서 위원회 이름을 비우거나 수정해 검색 범위를 넓힙니다.\n"
+            "- 「검색 문서 개수(top-k)」를 늘립니다.\n"
+            "- 회의일 범위가 너무 좁지 않은지 확인합니다.\n\n"
+            "설정을 바꾼 뒤 같은 질문을 다시 보내 보세요."
+        )
+
     answer = state.get("draft_answer", "").strip()
     if not answer:
-        answer = "죄송합니다. 이번 질문에 대한 답변을 생성하지 못했습니다."
+        answer = (
+            "모델이 이번 질문에 대한 본문 답변을 만들지 못했습니다. "
+            "아래 검색으로 가져온 회의록 참고 자료만 확인해 주세요."
+        )
     citations = state.get("citations", [])
     if citations:
         lines = ["\n\n📚 참고 자료"]
-        for item in citations:
-            committee = item.get("committee") or ""
-            document_name = item.get("document_name") or ""
-            title = item.get("title") or document_name or committee or "출처 미상"
+        for idx, item in enumerate(citations, start=1):
+            source_id = item.get("source_id") or item.get("chunk_id") or "source 미상"
             date = item.get("date") or item.get("meeting_date") or "날짜 미상"
-            ref_id = item.get("source_id") or item.get("chunk_id") or "ref"
+            quote = (item.get("quote") or "").strip()
+            if not quote:
+                fallback = item.get("title") or item.get("document_name") or item.get("committee") or ""
+                quote = str(fallback).strip()[:140]
             url = item.get("url", "")
-            line = f"- {title} ({date}) [{ref_id}]"
+            line = f"- [{idx}] source={source_id} date={date} quote={quote}"
             if url:
                 line += f" {url}"
             lines.append(line)
