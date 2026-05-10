@@ -2,8 +2,7 @@ from typing import TypedDict, List, Dict, Optional
 
 class QAState(TypedDict, total=False):
     question: str                              # 사용자가 입력한 원질문
-    user_level: str                            # "beginner" | "intermediate" | "advanced" - 답변 상세도
-    
+
     # 질문 재작성
     rewritten_query: str                       # LLM 등으로 재작성된 질의문, retrieval에 사용
     
@@ -17,7 +16,11 @@ class QAState(TypedDict, total=False):
     policy_flag: Optional[str]                 # 정책 위반 감지시 flag (ex: 금지 발언, OOS 등)
     
     meta: Dict                                 # {"top_k":int, "rerank_n":int, "max_ctx_tokens":int, ...} 등 질의 처리 주요 파라미터
-    
+
+    retrieval_empty: bool                      # 검색 결과 0건 → Generate 스킵 시 True
+    generation_skipped: str                    # 스킵 사유(e.g. "no_hits")
+    llm_error_kind: Optional[str]             # "model_backend" | "exception" | None — UI에서 검색 실패와 구분
+
     # vectordb의 결과 평가 (질문-컨텍스트 매칭 품질 등)
     # evaluation_result: str                     # 예/아니오 값 (ex: yes / no)
     # evaluation_score: float                    # 평가 점수 

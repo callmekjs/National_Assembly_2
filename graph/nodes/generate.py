@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import logging
+import os
 import re
+import time
+from datetime import date
 
 from graph.state import QAState
-from service.llm.llm_client import chat
+from service.llm.llm_client import chat, is_chat_failure_message
 from service.llm.prompt_templates import build_system_prompt, build_user_prompt
+
+logger = logging.getLogger(__name__)
+
+_MAX_OUT = int(os.getenv("GENERATE_MAX_TOKENS", "512"))
+
+
+def _est_tokens(text: str) -> int:
+    """대략 토큰 수(출력 과다 방지용 요약 로그)."""
+    return max(0, len(text) // 4)
 
 
 def _sanitize_context(context: str) -> str:
@@ -64,16 +77,17 @@ def _fallback_answer(question: str, context: str) -> str:
 
 
 def _build_numbered_context(state: QAState) -> str:
-    """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다."""
+    """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다. 답변에는 raw 메타 키(source= 등)를 노출하지 말라고 시스템에서 지시한다."""
     docs = state.get("reranked") or state.get("retrieved") or []
     sections: list[str] = []
     for idx, doc in enumerate(docs[:5], start=1):
         body = (doc.get("chunk_text") or "").strip()
         if not body:
             continue
-        source_id = doc.get("source_id") or "source 미상"
+        meta = doc.get("metadata") or {}
+        speaker = str(meta.get("speaker") or "").strip() or "미상"
         date = doc.get("date") or "날짜 미상"
-        sections.append(f"[{idx}] source={source_id} date={date}\n{body}")
+        sections.append(f"[{idx}] (회의일 {date}) 발언자: {speaker}\n{body}")
     return "\n\n".join(sections)
 
 
@@ -94,13 +108,13 @@ def _sanitize_invalid_citations(answer: str, max_ref: int) -> str:
 def run(state: QAState) -> QAState:
     """
     역할:
-      - QAState 내의 user_level, question, context 등 필드를 이용해 시스템/유저 프롬프트를 생성
+      - QAState의 question, context 등으로 시스템/유저 프롬프트를 생성
       - LLM(Chat)으로 답변 초안 생성 → state["draft_answer"]에 저장
 
     동작 흐름:
-      1. state에서 유저 레벨, 질문, 컨텍스트 추출 (각각의 값이 없으면 디폴트 사용)
-      2. 시스템 프롬프트(Based on user_level)와 유저 프롬프트(질문+문맥)를 생성
-      3. chat() 함수 호출로 답변 텍스트 생성 (최대 512토큰)
+      1. state에서 질문, 컨텍스트 추출
+      2. 시스템 프롬프트(페르소나·규칙·질문별 강조)와 유저 프롬프트(질문+문맥)를 생성
+      3. chat() 함수 호출로 답변 텍스트 생성
       4. 생성된 답변을 state["draft_answer"]에 저장
       5. 예외 발생시 에러로그 남기고 안내 문구 반환
 
@@ -110,37 +124,60 @@ def run(state: QAState) -> QAState:
     Returns:
         QAState: draft_answer가 추가된 상태
     """
+    state.pop("llm_error_kind", None)
+    state.pop("generation_skipped", None)
+
+    if state.get("retrieval_empty"):
+        state["draft_answer"] = ""
+        state["generation_skipped"] = "no_hits"
+        logger.info("[Generate] skipped: retrieval_empty")
+        return state
+
     try:
-        # 1. 입력값 추출
-        user_level = state.get("user_level", "intermediate")  # 유저 전문성 수준
-        question = state.get("question", "")                  # 질문 텍스트
-        context = _build_numbered_context(state) or state.get("context", "")  # RAG 검색 컨텍스트
+        question = state.get("question", "")
+        context = _build_numbered_context(state) or state.get("context", "")
         max_ref = len(state.get("citations", []))
 
-        print(f"[Generate] start (level={user_level}, ctx_len={len(context)})")
+        system_prompt = build_system_prompt(question)
+        user_prompt = build_user_prompt(question, context, reference_date=date.today())
+        prompt_blob = f"{system_prompt}\n{user_prompt}"
 
-        # 2. 프롬프트 생성
-        system_prompt = build_system_prompt(user_level)
-        user_prompt = build_user_prompt(question, context, user_level)
-
-        # 3. LLM 답변 생성
+        t0 = time.perf_counter()
         answer = chat(
             system=system_prompt,
             user=user_prompt,
-            max_tokens=512,
+            max_tokens=_MAX_OUT,
         )
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+
+        if is_chat_failure_message(answer):
+            state["llm_error_kind"] = "model_backend"
+            state["draft_answer"] = answer.strip()
+            logger.info(
+                "[Generate] model_backend chars=%s ms=%s",
+                len(answer),
+                elapsed_ms,
+            )
+            return state
+
         answer = _sanitize_invalid_citations(answer, max_ref)
         state["draft_answer"] = answer
 
-        print(f"[Generate] complete (answer_chars={len(answer)})")
-        print(f"[Generate] preview={answer[:200]!r}")
+        logger.info(
+            "[Generate] ok ms=%s prompt_est_tok=%s out_est_tok=%s out_chars=%s",
+            elapsed_ms,
+            _est_tokens(prompt_blob),
+            _est_tokens(answer),
+            len(answer),
+        )
+
         if not answer.strip():
             fallback = _fallback_answer(question, context)
             state["draft_answer"] = fallback
-            print(f"[Generate] fallback engaged (chars={len(fallback)})")
+            logger.info("[Generate] empty answer → fallback chars=%s", len(fallback))
     except Exception as exc:
-        # 예외 발생 시 로깅 및 안내 문구 반환
-        print(f"[Generate] error={exc}")
+        logger.exception("[Generate] exception")
+        state["llm_error_kind"] = "exception"
         state["draft_answer"] = "죄송합니다. 답변 생성 중 오류가 발생했습니다."
 
     return state

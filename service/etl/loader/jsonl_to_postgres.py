@@ -62,6 +62,7 @@ def load_jsonl_files(jsonl_dir: Path, batch_size: int = 1000) -> bool:
 
 
 def _insert_rows(cur, rows: list[tuple]) -> None:
+    # chunk_id 기준 upsert: 동일 청크 재적재 시 최신 행으로 덮어 중복 적재를 완화한다.
     cur.executemany(
         """
         INSERT INTO chunks (chunk_id, source_id, text, metadata)

@@ -59,3 +59,21 @@
 2. `evaluate_retrieval` 1회 통과(지표는 README 참고)  
 3. `qa_demo` 3문항 실행, `Search hits` 및 근거 블록 형식 확인  
 4. `streamlit run app.py` 후 **회의록 질의**에서 한 번 질의·참고 자료 확인
+
+## LLM 생성 (Day 12 요약)
+
+- **경로**: `.env`에 `OPENAI_API_KEY`가 있고 `FORCE_LOCAL_LLM`이 아니면 OpenAI Chat Completions 사용. 없으면 로컬 HF(`MODEL_DIR_BASE`, `MODEL_DIR_ADAPTER`).
+- **환경 변수(선택)**  
+  - `GENERATE_MAX_TOKENS` — Generate 노드 `max_tokens`(기본 `512`).  
+  - `OPENAI_TEMPERATURE` — OpenAI만 적용(기본 `0.7`). 로컬 HF는 `llm_client`의 `generate()`에서 `temperature=0.7` 고정.  
+- **재현성**: 동일 질문이라도 샘플링으로 문구가 달라질 수 있음. 더 안정적으로 쓰려면 온도·샘플링 정책을 낮추는 방향을 검토한다.
+- **홈/질의 화면**: 키도 없고 로컬 모델 경로도 없으면 경고 배너가 뜬다(모델을 실제로 로드하지는 않음).
+
+## 데이터·검색 (Day 13 요약)
+
+- **적재 정합**: 새 배치 적재 후 `chunks` 행 수와 `embeddings_e5` 행 수가 같아야 한다. 미임베딩 행이 있으면 `python -m service.etl.loader.loader_cli load vector`로 보충한다.
+- **일괄 스모크**: `python -m service.rag.smoke_day13 --pg-port 5433` — 건수 비교 + 무필터·위원회 필터·날짜 역전(자동 보정) 등 검색이 각각 `hits >= 1`인지 확인한다.
+- **민감도(참고)**  
+  - `committee`는 메타 JSON의 문자열과 **완전 일치**해야 한다(공백·표기 차이 시 결과 없음).  
+  - `meeting_date`가 `YYYY-MM-DD`가 아니면 시작·종료 필터 문자열 비교가 어긋날 수 있다.  
+  - 시작일이 종료일보다 늦게 입력되면 **`normalize_meeting_date_range`**가 순서를 바꿔 검색한다(`Retriever`·Streamlit Retrieve 노드 공통).

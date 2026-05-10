@@ -159,7 +159,7 @@ def _chat_openai(system: str, user: str, max_tokens: int) -> str:
             {"role": "user", "content": user.strip()},
         ],
         "max_tokens": max_tokens,
-        "temperature": 0.7,
+        "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
@@ -196,6 +196,42 @@ def _chat_local_hf(system: str, user: str, max_tokens: int) -> str:
     )
     output_ids = gen_out[0][input_ids.shape[-1]:]
     return tokenizer.decode(output_ids, skip_special_tokens=True).strip()
+
+
+def is_chat_failure_message(text: str) -> bool:
+    """chat()이 모델 미기동·API 실패 시 돌려주는 안내 문구인지(예외 없이 문자열로 반환된 경우)."""
+    if not text or not text.strip():
+        return False
+    markers = (
+        "로컬 LLM 답변 생성에 실패",
+        "OpenAI API 호출에 실패",
+    )
+    return any(m in text for m in markers)
+
+
+def llm_env_probe() -> tuple[bool, str]:
+    """
+    무거운 모델 로드 없이 키·로컬 경로만 검사.
+    Returns:
+        (True, "") — 설정상으로는 생성 시도 가능
+        (False, msg) — 홈/질의 화면에 띄울 짧은 안내
+    """
+    if _use_openai():
+        return True, ""
+    base = Path(HF_BASE_MODEL).expanduser()
+    lora = Path(HF_REPO_ID).expanduser()
+    missing: list[str] = []
+    if not base.exists():
+        missing.append(f"베이스 `{HF_BASE_MODEL}`")
+    if not lora.exists():
+        missing.append(f"LoRA `{HF_REPO_ID}`")
+    if missing:
+        return False, (
+            "로컬 LLM 경로가 없고 `OPENAI_API_KEY`도 없습니다. "
+            + ", ".join(missing)
+            + " 를 확인하거나 `.env`에 OpenAI 키를 설정하세요."
+        )
+    return True, ""
 
 
 def chat(system: str, user: str, max_tokens: int = 512) -> str:

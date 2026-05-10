@@ -10,9 +10,14 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 import streamlit as st
 from pages.app_bootstrap import render_sidebar
 from config.database import init_database
+from service.llm.llm_client import llm_env_probe
 
 init_database()
 render_sidebar()
+
+_ok_llm, _llm_msg = llm_env_probe()
+if not _ok_llm:
+    st.warning(_llm_msg, icon="⚠️")
 
 st.title("국회 회의록 근거 기반 질의응답 (RAG)")
 st.markdown(

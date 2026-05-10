@@ -70,7 +70,6 @@ def main() -> int:
     for q in questions:
         state: dict = {
             "question": q,
-            "user_level": "intermediate",
             "meta": _streamlit_like_meta(),
         }
         router.run(state)

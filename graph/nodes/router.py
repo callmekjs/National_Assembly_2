@@ -7,25 +7,11 @@ logger = logging.getLogger(__name__)
 
 def run(state: QAState) -> QAState:
     """
-    사용자 레벨(user_level)에 따라 세션 상태(state)를 표준화하고,
-    그에 맞는 주요 파라미터 셋(meta: top_k, rerank_n, max_ctx_tokens 등)을 할당한다.
-
-    - user_level이 None이거나 잘못 지정된 경우 중간값('beginner')을 사용
-    - meta에는 level별 기본값 dict를 저장함
-      (참조: graph/utils/level.py의 default)
+    기본 검색 메타(top_k, alpha 등)를 깔고, 호출 시 넘긴 meta로 덮어쓴다.
     """
-    
-    lvl = (state.get("user_level") or "beginner").lower()
-    if lvl not in ("beginner","intermediate","advanced"):
-        lvl = "beginner"
-    logger.info("Router start (requested_level=%s)", state.get("user_level"))
-    state["user_level"] = lvl
+    logger.info("Router start")
     incoming = state.get("meta")
     incoming = incoming if isinstance(incoming, dict) else {}
-    state["meta"] = {**defaults(lvl), **incoming}
-    logger.info(
-        "Router complete → level=%s, meta=%s",
-        lvl,
-        state.get("meta"),
-    )
+    state["meta"] = {**defaults(), **incoming}
+    logger.info("Router complete → meta=%s", state.get("meta"))
     return state

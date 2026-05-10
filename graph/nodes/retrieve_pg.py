@@ -1,4 +1,5 @@
 from graph.state import QAState
+from service.rag.retrieval.date_range import normalize_meeting_date_range
 from service.rag.retrieval.retriever import Retriever
 from service.rag.models.config import EmbeddingModelType
 
@@ -18,6 +19,10 @@ def run(state: QAState) -> QAState:
         date_from = None
     if isinstance(date_to, str) and not date_to.strip():
         date_to = None
+    date_from, date_to = normalize_meeting_date_range(
+        str(date_from) if date_from else None,
+        str(date_to) if date_to else None,
+    )
     use_reranker = bool(meta.get("use_reranker", False))
     balance_speakers = bool(meta.get("balance_speakers", False))
     candidate_multiplier = int(meta.get("candidate_multiplier", 50))
@@ -33,6 +38,7 @@ def run(state: QAState) -> QAState:
         balance_speakers=balance_speakers,
         candidate_multiplier=candidate_multiplier,
     )
+    state["retrieval_empty"] = len(results) == 0
     state["retrieved"] = [
         {
             "chunk_text": r.get("content", ""),

@@ -1,9 +1,19 @@
 from __future__ import annotations
+
 import json
+import re
+
+import pandas as pd
 import streamlit as st
-from datetime import datetime
+from datetime import date, datetime
 from service.chat_service import ChatService
+from service.llm.llm_client import llm_env_probe
 from graph.app_graph import build_app
+
+# 본문과 참고 자료 UI 분리용 마커(모델 출력에 포함되지 않음)
+RAG_REF_MARKER = "<!--RAG_REFERENCES-->"
+RAG_CITATIONS_JSON_BEGIN = "<!--CITATIONS_JSON-->"
+RAG_CITATIONS_JSON_END = "<!--/CITATIONS_JSON-->"
 
 
 def change_chat_theme() -> None:
@@ -60,35 +70,45 @@ def change_chat_theme() -> None:
     .stChatInput button:hover {
         background: #2563EB !important;
     }
+
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        max-width: 100%;
+    }
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] pre,
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] code {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+    }
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] p {
+        margin-bottom: 0.65rem;
+        line-height: 1.65;
+    }
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] h2,
+    section[data-testid="stChatMessage"] div[data-testid="stMarkdownContainer"] h3 {
+        margin-top: 0.9rem;
+        margin-bottom: 0.45rem;
+    }
+    section[data-testid="stChatMessage"] [data-testid="stExpander"] div[data-testid="stMarkdownContainer"] {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        max-width: 100%;
+    }
     </style>
     """, unsafe_allow_html=True)
 
 
 
-# 예상 질문 목록 (레벨별)
-SUGGESTED_QUESTIONS = {
-    "beginner": [
-        "외교통일위원회 최근 회의의 핵심 쟁점을 쉽게 요약해줘.",
-        "특정 회의록에서 누가 어떤 발언을 했는지 알려줘.",
-        "최근 회의 일정과 안건 흐름을 간단히 정리해줘.",
-    ],
-    "intermediate": [
-        "같은 안건이 여러 회의에서 어떻게 이어졌는지 비교해줘.",
-        "쟁점별로 여야 발언 경향을 정리해줘.",
-        "회의록 근거 문장과 함께 요약해줘.",
-    ],
-    "advanced": [
-        "특정 기간 회의록에서 외교 현안의 논점 변화를 추적해줘.",
-        "주요 발언자별 주장 패턴을 비교해줘.",
-        "위원회별 의제 유사도를 근거와 함께 설명해줘.",
-    ],
-}
-
-LEVEL_LABEL = {
-    "beginner": "초급",
-    "intermediate": "중급",
-    "advanced": "고급",
-}
+# 추천 질문 (난이도 분기 없음 — 단일 고품질 답변 모드)
+SUGGESTED_QUESTIONS = [
+    "외교통일위원회 최근 회의의 핵심 쟁점과 정책 함의를 정리해줘.",
+    "특정 회의록에서 누가 어떤 발언을 했는지 근거와 함께 알려줘.",
+    "같은 안건이 여러 회의에서 어떻게 이어졌는지 비교해줘.",
+    "쟁점별로 여야·정부 발언 경향을 회의록 근거로 정리해줘.",
+    "특정 기간 회의록에서 외교 현안의 논점 변화를 추적해줘.",
+    "주요 발언자별 주장 패턴을 근거와 함께 비교해줘.",
+]
 
 
 # 채팅 서비스 초기화
@@ -98,7 +118,9 @@ def render_chat_panel() -> None:
     """Render interactive chat interface for Q&A."""
     # 버튼 스타일 적용
     change_chat_theme()
-    
+
+    _llm_setup_banner()
+
     _init_state()
     
     # 대화창 관리 사이드바를 맨 먼저 렌더링 (상단에 위치)
@@ -117,16 +139,11 @@ def render_chat_panel() -> None:
     for message in current_history:
         role = message["role"]
         with chat_container:
-            st.chat_message(name=role, avatar=_avatar_for(role)).write(message["content"])
-
-    if st.session_state.get("latest_langgraph_state"):
-        with st.expander("LangGraph 상태 (디버그)", expanded=False):
-            debug_state = _summarize_state(st.session_state["latest_langgraph_state"])
-            st.text_area(
-                "state",
-                json.dumps(debug_state, ensure_ascii=False, indent=2),
-                height=320,
-            )
+            with st.chat_message(name=role, avatar=_avatar_for(role)):
+                if role == "assistant":
+                    _render_assistant_markdown(message["content"])
+                else:
+                    st.markdown(message["content"])
 
     # 채팅 입력창
     user_input = st.chat_input("질문을 입력하세요.")
@@ -136,14 +153,7 @@ def render_chat_panel() -> None:
 
 def _render_suggested_questions() -> None:
     """예상 질문 버튼들을 렌더링"""
-    level_raw = st.session_state.get("user_level") or "beginner"
-    level = str(level_raw).lower()
-    if level not in SUGGESTED_QUESTIONS:
-        level = "beginner"
-
-    display_level = LEVEL_LABEL.get(level, LEVEL_LABEL["beginner"])
-
-    st.markdown(f"### 💡 추천 질문 ({display_level})")
+    st.markdown("### 💡 추천 질문")
     st.markdown("궁금한 내용을 클릭해보세요!")
     st.markdown(
         """
@@ -163,11 +173,11 @@ def _render_suggested_questions() -> None:
     # 2열로 버튼 배치
     st.markdown('<div class="suggested-wrap">', unsafe_allow_html=True)
     cols = st.columns(2)
-    questions = SUGGESTED_QUESTIONS[level]
+    questions = SUGGESTED_QUESTIONS
     for i, question in enumerate(questions):
         col = cols[i % 2]
         with col:
-            if st.button(question, key=f"suggested_{level}_{i}", use_container_width=True):
+            if st.button(question, key=f"suggested_q_{i}", use_container_width=True):
                 _handle_user_input(question)
     st.markdown('</div>', unsafe_allow_html=True)
     
@@ -180,8 +190,6 @@ def _init_state() -> None:
         st.session_state.chat_sessions = {}
         st.session_state.current_session_id = None
         _load_saved_sessions()
-    if "user_level" not in st.session_state:
-        st.session_state.user_level = st.session_state.get("user_level") or "beginner"
     defaults = [
         ("qa_top_k", 8),
         ("qa_alpha", 0.75),
@@ -244,12 +252,6 @@ def _render_sidebar() -> None:
     """대화 및 검색 설정 사이드바"""
     with st.sidebar:
         with st.expander("검색·답변 설정", expanded=True):
-            st.selectbox(
-                "답변 난이도",
-                options=["beginner", "intermediate", "advanced"],
-                format_func=lambda k: LEVEL_LABEL.get(k, k),
-                key="user_level",
-            )
             st.slider(
                 "검색 문서 개수 (top-k)",
                 min_value=3,
@@ -317,7 +319,7 @@ def _render_sidebar() -> None:
         if st.button("➕ 새 대화", width='stretch'):
             _create_new_session()
             st.rerun()
-        st.write("---")
+        st.markdown("---")
         st.caption("© 2025 SKN18-3rd-5Team")
 
 
@@ -367,12 +369,10 @@ def _handle_user_input(user_input: str) -> None:
     _append_message("user", user_input)
     try:
         app = _get_langgraph_app()
-        user_level = str(st.session_state.get("user_level", "intermediate")).lower()
         meta = _build_search_meta_from_session()
         with st.spinner("회의록을 검색하고 답변을 작성하는 중입니다..."):
-            lg_state = app.invoke({"question": user_input, "user_level": user_level, "meta": meta})
+            lg_state = app.invoke({"question": user_input, "meta": meta})
         assistant_reply = _format_langgraph_response(lg_state)
-        st.session_state["latest_langgraph_state"] = lg_state
         print(f"[Chat] assistant_reply={assistant_reply[:200]!r}")
         _append_message("assistant", assistant_reply)
     except Exception as exc:
@@ -427,34 +427,192 @@ def _avatar_for(role: str) -> str:
     return "🧑‍💻" if role == "user" else "🤖"
 
 
-def _summarize_state(state: dict, str_limit: int = 200) -> dict:
-    def _summarize(value):
-        if isinstance(value, str):
-            text = value.strip()
-            return text if len(text) <= str_limit else text[:str_limit] + "…"
-        if isinstance(value, list):
-            items = [_summarize(item) for item in value[:3]]
-            if len(value) > 3:
-                items.append(f"… (+{len(value) - 3} more)")
-            return items
-        if isinstance(value, dict):
-            preview = list(value.items())[:6]
-            return {k: _summarize(v) for k, v in preview}
-        return value
-
-    return {k: _summarize(v) for k, v in state.items()}
-
-
 def _get_langgraph_app():
     if "langgraph_app" not in st.session_state:
         st.session_state.langgraph_app = build_app()
     return st.session_state.langgraph_app
 
+def _llm_setup_banner() -> None:
+    ok, msg = llm_env_probe()
+    if ok:
+        return
+    st.warning(msg, icon="⚠️")
+
+
+def _parse_meeting_iso(d: str) -> date | None:
+    s = (d or "").strip()[:10]
+    if len(s) < 10:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _summary_for_display(quote: str, item: dict) -> str:
+    q = (quote or "").strip()
+    if not q:
+        fb = item.get("title") or item.get("document_name") or item.get("committee") or ""
+        q = str(fb).strip() or "—"
+    if len(q) <= 40:
+        return q
+    return q[:37].rstrip() + "..."
+
+
+def _parse_citations_json(blob: str) -> list[dict] | None:
+    """메시지 꼬리에서 JSON 인용 목록 추출. 없거나 깨졌으면 None."""
+    blob = blob.strip()
+    if RAG_CITATIONS_JSON_BEGIN not in blob:
+        return None
+    try:
+        start = blob.index(RAG_CITATIONS_JSON_BEGIN) + len(RAG_CITATIONS_JSON_BEGIN)
+        end = blob.index(RAG_CITATIONS_JSON_END, start)
+        return json.loads(blob[start:end])
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def _render_references_table(citations: list[dict]) -> None:
+    """참고 자료를 표로 정렬해 표시 (본문 [n] ↔ 표 번호)."""
+    ref_d = date.today()
+    rows: list[dict] = []
+    any_date_warn = False
+    for idx, item in enumerate(citations, start=1):
+        speaker = (item.get("speaker") or "").strip() or "발언자 미상"
+        date_disp = item.get("date") or item.get("meeting_date") or "—"
+        quote = (item.get("quote") or "").strip()
+        summary = _summary_for_display(quote, item)
+        url = (item.get("url") or "").strip()
+        link_cell = url if url.startswith(("http://", "https://")) else None
+
+        note = ""
+        parsed = _parse_meeting_iso(date_disp if date_disp != "—" else "")
+        if parsed is not None:
+            # 2025년 이후·기준일과 365일 이상 차이: ETL 중복·연도 혼선 및 시차 안내
+            if parsed >= date(2025, 1, 1) or abs((parsed - ref_d).days) >= 365:
+                note = "날짜 확인 필요"
+                any_date_warn = True
+
+        rows.append(
+            {
+                "번호": idx,
+                "회의일": date_disp,
+                "발언자": speaker,
+                "인용 요약 (40자)": summary,
+                "링크": link_cell,
+                "비고": note,
+            }
+        )
+
+    st.caption(
+        "본문 **`[n]`** 과 표의 **번호** 열이 대응합니다. 인용 요약은 40자 이내로 잘립니다."
+    )
+    df = pd.DataFrame(rows)
+    st.dataframe(
+        df,
+        column_config={
+            "번호": st.column_config.NumberColumn("번호", format="%d", width="small"),
+            "회의일": st.column_config.TextColumn("회의일", width="small"),
+            "발언자": st.column_config.TextColumn("발언자", width="small"),
+            "인용 요약 (40자)": st.column_config.TextColumn("인용 요약", width="large"),
+            "링크": st.column_config.LinkColumn(
+                "원문",
+                display_text="열기",
+                width="small",
+            ),
+            "비고": st.column_config.TextColumn("비고", width="small"),
+        },
+        hide_index=True,
+        use_container_width=True,
+    )
+    if any_date_warn:
+        st.caption("*일부 출처의 날짜가 질문 시점과 다를 수 있습니다.*")
+
+
+def _append_citations_block(answer: str, state: dict) -> str:
+    citations = state.get("citations", [])
+    if not citations:
+        return answer
+    payload = json.dumps(citations, ensure_ascii=False)
+    return (
+        answer.rstrip()
+        + "\n\n"
+        + RAG_REF_MARKER
+        + "\n"
+        + RAG_CITATIONS_JSON_BEGIN
+        + payload
+        + RAG_CITATIONS_JSON_END
+    )
+
+
+def _normalize_llm_markdown(text: str) -> str:
+    """모델이 한 줄에 이어붙인 `##`, 불릿을 줄바꿈으로 분리해 Streamlit 마크다운이 인식하게 한다."""
+    t = (text or "").replace("\r\n", "\n").strip()
+    if not t:
+        return t
+    # "...문장. ## 제목" → 헤더가 줄 맨 앞에 오도록
+    t = re.sub(r"([.!?。…])\s*(##\s)", r"\1\n\n\2", t)
+    t = re.sub(r"(\])\s*(##\s)", r"\1\n\n\2", t)
+    # "## 세부 근거 - 첫불릿" 한 줄인 경우
+    t = re.sub(r"(##\s*세부\s*근거)\s*-\s+", r"\1\n\n- ", t, flags=re.IGNORECASE)
+    # "## 한계 본문" 첫 글자 앞에 빈 줄
+    t = re.sub(r"(##\s*한계)\s+([^\n#])", r"\1\n\n\2", t)
+    # 문장 끝 다음 불릿 "- "
+    t = re.sub(r"\.\s+-\s+", ".\n- ", t)
+    t = re.sub(r"\]\s+-\s+", "]\n- ", t)
+    return t
+
+
+def _render_markdown_sections(body: str) -> None:
+    """`##` 헤더는 Streamlit subheader로 옮겨 마커(#) 노출을 줄이고 단락을 나눈다."""
+    t = _normalize_llm_markdown(body)
+    parts = re.split(r"(?m)^(?=## (?![#]))", t)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lines = part.split("\n", 1)
+        first = lines[0].strip()
+        rest = lines[1].strip() if len(lines) > 1 else ""
+        if first.startswith("##") and not first.startswith("###"):
+            title = first.lstrip("#").strip()
+            while title.startswith("#"):
+                title = title.lstrip("#").strip()
+            st.subheader(title)
+            if rest:
+                st.markdown(rest)
+        else:
+            st.markdown(part)
+
+
+def _render_assistant_markdown(content: str) -> None:
+    """본문은 섹션 단위로 정리해 표시, 참고 자료는 펼침 영역."""
+    if RAG_REF_MARKER in content:
+        main, _, refs = content.partition(RAG_REF_MARKER)
+        main = main.strip()
+        refs = refs.strip()
+        if main:
+            _render_markdown_sections(main)
+        if refs:
+            with st.expander("📚 참고 자료 (회의록 근거)", expanded=True):
+                parsed = _parse_citations_json(refs)
+                if parsed is not None:
+                    _render_references_table(parsed)
+                else:
+                    _render_markdown_sections(refs)
+    else:
+        _render_markdown_sections(content)
+
+
 def _format_langgraph_response(state: dict) -> str:
     docs = state.get("reranked") or state.get("retrieved") or []
+    llm_kind = state.get("llm_error_kind")
+    draft_raw = (state.get("draft_answer") or "").strip()
+
     if not docs:
         return (
-            "관련 회의록을 찾지 못했습니다.\n\n"
+            "**적재된 회의록 데이터에서 관련 청크를 찾지 못했습니다.**\n\n"
+            "(검색 단계에서 결과가 0건입니다. 답변 생성 전에 중단되었습니다.)\n\n"
             "**다음을 시도해 보세요.**\n"
             "- 왼쪽에서 위원회 이름을 비우거나 수정해 검색 범위를 넓힙니다.\n"
             "- 「검색 문서 개수(top-k)」를 늘립니다.\n"
@@ -462,26 +620,27 @@ def _format_langgraph_response(state: dict) -> str:
             "설정을 바꾼 뒤 같은 질문을 다시 보내 보세요."
         )
 
-    answer = state.get("draft_answer", "").strip()
+    if llm_kind == "model_backend" and draft_raw:
+        head = (
+            "**답변 생성(모델/키) 단계에서 실패했습니다.** "
+            "회의록 검색은 문서를 가져온 상태입니다.\n\n"
+            f"{draft_raw}\n\n"
+            "`.env`의 `OPENAI_API_KEY`, 또는 로컬 경로 `MODEL_DIR_BASE` / `MODEL_DIR_ADAPTER`를 확인하세요."
+        )
+        return _append_citations_block(head, state)
+
+    if llm_kind == "exception" and draft_raw:
+        head = (
+            "**답변 생성 중 예외가 발생했습니다.** "
+            "회의록 검색 결과는 있으나 모델 처리에서 오류가 났습니다.\n\n"
+            f"{draft_raw}"
+        )
+        return _append_citations_block(head, state)
+
+    answer = draft_raw
     if not answer:
         answer = (
             "모델이 이번 질문에 대한 본문 답변을 만들지 못했습니다. "
             "아래 검색으로 가져온 회의록 참고 자료만 확인해 주세요."
         )
-    citations = state.get("citations", [])
-    if citations:
-        lines = ["\n\n📚 참고 자료"]
-        for idx, item in enumerate(citations, start=1):
-            source_id = item.get("source_id") or item.get("chunk_id") or "source 미상"
-            date = item.get("date") or item.get("meeting_date") or "날짜 미상"
-            quote = (item.get("quote") or "").strip()
-            if not quote:
-                fallback = item.get("title") or item.get("document_name") or item.get("committee") or ""
-                quote = str(fallback).strip()[:140]
-            url = item.get("url", "")
-            line = f"- [{idx}] source={source_id} date={date} quote={quote}"
-            if url:
-                line += f" {url}"
-            lines.append(line)
-        answer += "\n".join(lines)
-    return answer
+    return _append_citations_block(answer, state)

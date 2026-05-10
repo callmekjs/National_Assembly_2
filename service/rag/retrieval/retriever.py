@@ -4,6 +4,7 @@ import re
 
 from service.rag.models.encoder import EmbeddingEncoder
 from service.rag.models.config import EmbeddingModelType
+from service.rag.retrieval.date_range import normalize_meeting_date_range
 from service.rag.retrieval.reranker import create_default_reranker
 from service.rag.vectorstore.pgvector_store import PgVectorStore
 
@@ -32,10 +33,11 @@ class Retriever:
     ) -> list[dict]:
         expanded_query = self._expand_query(query)
         vector = self.encoder.encode_query(expanded_query)
+        df, dt = normalize_meeting_date_range(date_from, date_to)
         filters = {
             "committee": committee or "",
-            "date_from": date_from or "",
-            "date_to": date_to or "",
+            "date_from": df or "",
+            "date_to": dt or "",
         }
         multiplier = max(1, int(candidate_multiplier))
         candidate_k = max(top_k, top_k * multiplier)
@@ -65,6 +67,7 @@ class Retriever:
                 }
             )
         out = sorted(out, key=lambda x: x.get("hybrid_score", x.get("similarity", 0.0)), reverse=True)
+        out = self._dedupe_by_chunk_id(out)
         if use_reranker and out:
             reranker = create_default_reranker()
             out = reranker.rerank(query, out, top_k=top_k)
@@ -72,6 +75,24 @@ class Retriever:
             out = self._balance_speakers(out, top_k)
         else:
             out = out[:top_k]
+        return out
+
+    def _dedupe_by_chunk_id(self, docs: list[dict]) -> list:
+        """동일 chunk_id가 후보 목록에 중복 등장하면(재적재·조인 중복 등) 상위 점수 한 건만 남긴다."""
+        seen: set[str] = set()
+        out: list[dict] = []
+        for d in docs:
+            cid = str(d.get("chunk_id") or "").strip()
+            if cid:
+                if cid in seen:
+                    continue
+                seen.add(cid)
+            else:
+                key = f"{d.get('source_id', '')}|{(d.get('content') or '')[:120]}"
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(d)
         return out
 
     def _lexical_overlap_score(self, query: str, content: str) -> float:

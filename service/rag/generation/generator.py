@@ -7,14 +7,31 @@ from typing import Any
 import requests
 
 
+def _speaker_from_retrieved(r: dict[str, Any]) -> str:
+    meta = r.get("metadata") or {}
+    sp = str(meta.get("speaker") or meta.get("speaker_name") or "").strip()
+    return sp or "발언자 미상"
+
+
+def _meeting_date_from_retrieved(r: dict[str, Any]) -> str:
+    d = str(r.get("date") or "").strip()
+    if not d and isinstance(r.get("metadata"), dict):
+        d = str(r["metadata"].get("meeting_date") or "").strip()
+    return d or "—"
+
+
 class Generator:
     def _build_citations(self, retrieved: list[dict[str, Any]], max_items: int = 5) -> str:
         lines: list[str] = []
         for idx, item in enumerate(retrieved[:max_items], start=1):
-            source_id = item.get("source_id", "")
-            date = item.get("date", "")
-            quote = (item.get("content", "") or "").replace("\n", " ").strip()[:140]
-            lines.append(f"[{idx}] source={source_id} date={date} quote={quote}")
+            speaker = _speaker_from_retrieved(item)
+            date_disp = _meeting_date_from_retrieved(item)
+            quote = (item.get("content", "") or "").replace("\n", " ").strip()
+            if len(quote) <= 40:
+                summary = quote
+            else:
+                summary = quote[:37].rstrip() + "..."
+            lines.append(f'[{idx}] ({date_disp}) {speaker}: "{summary}"')
         return "\n".join(lines)
 
     def _sanitize_invalid_citations(self, answer: str, max_ref: int) -> str:
@@ -70,7 +87,8 @@ class Generator:
             return "관련 문서를 찾지 못했습니다."
         max_ref = min(5, len(retrieved))
         context = "\n\n".join(
-            f"[{i+1}] source={r.get('source_id','')} date={r.get('date','')}\n{(r.get('content','') or '')[:800]}"
+            f"[{i+1}] (회의일 {_meeting_date_from_retrieved(r)}) 발언자: {_speaker_from_retrieved(r)}\n"
+            f"{(r.get('content','') or '')[:800]}"
             for i, r in enumerate(retrieved[:5])
         )
         answer = self._sanitize_invalid_citations(self.generate(question, context), max_ref)
