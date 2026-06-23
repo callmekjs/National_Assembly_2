@@ -6,6 +6,27 @@
 
 ---
 
+## [인프라·엔지니어링 4-1/4-2/4-3] 2026-06-23
+
+FastAPI 레이어, 쿼리 모니터링, 핵심 모듈 단위 테스트 구현.
+
+### Added
+- **FastAPI 앱** (`api/main.py`): `POST /query` · `GET /meetings` · `GET /health` · Swagger UI `/docs`
+  - `POST /query`: LangGraph 파이프라인 호출 → 답변 + citations + latency_ms 반환
+  - `GET /meetings`: DB에서 위원회·날짜·청크 수 목록 조회
+  - `GET /logs`, `/logs/failures`, `/logs/stats`: 쿼리 로그 모니터링 엔드포인트
+- **쿼리 로거** (`service/monitoring/query_logger.py`):
+  - `query_logs` 테이블: 질문·답변·grounding_level·doc_count·latency 자동 누적
+  - `is_recall_zero` 컬럼: recall=0 질의 자동 감지 + 인덱싱
+  - `get_recent_failures()`, `get_stats()`: 검색 실패 분리 조회 및 통계
+- **단계별 latency 측정**: `retrieve_pg.py` + `generate.py` 노드에서 ms 단위 측정 → `state["latency_ms"]` 저장 → DB 기록
+- **단위 테스트** (`tests/`): 41/41 PASS — DB·모델 없이 mock으로 실행
+  - `test_chunker.py`: `_extract_speaker`, `_split_by_sentence`, `_make_chunks` 13개
+  - `test_normalizer.py`: `_normalize_text`, `_normalize_metadata` 16개
+  - `test_retriever.py`: `_lexical_overlap_score`, `_domain_keyword_boost`, `_balance_speakers` 등 12개
+
+---
+
 ## [전체 테스트 통과 · 안정화] 2026-06-23
 
 시스템 테스트 22/22 · 데이터 파이프라인 테스트 13/13 전부 PASS. 디버그 잔재 제거 및 기본 preset 고정.
@@ -166,5 +187,8 @@ RAG 검색·평가·데이터 파이프라인 대규모 고도화 스프린트.
 | 시스템 테스트 22/22 PASS | ✅ 2026-06-23 |
 | 데이터 파이프라인 테스트 13/13 PASS | ✅ 2026-06-23 |
 | 기본 preset 고정 (Fusion + Neural) | ✅ 2026-06-23 |
+| FastAPI 레이어 (POST /query, GET /meetings) | ✅ 2026-06-23 |
+| 쿼리 로그·recall=0 감지·단계별 latency | ✅ 2026-06-23 |
+| 단위 테스트 41/41 PASS (chunker·normalizer·retriever) | ✅ 2026-06-23 |
 | Day 14 배포 패키징 | ⬜ [ROADMAP](ROADMAP.md) |
 | Day 15 발표 패키지 | ⬜ [ROADMAP](ROADMAP.md) |

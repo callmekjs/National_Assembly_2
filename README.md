@@ -16,6 +16,8 @@
 | 할루시네이션 방어 | Grounding Check FULL / PARTIAL / NONE 3단계 |
 | 시스템 테스트 | 22/22 PASS |
 | 데이터 파이프라인 테스트 | 13/13 PASS |
+| 단위 테스트 | **41/41 PASS** (chunker · normalizer · retriever) |
+| API | FastAPI `POST /query` · `GET /meetings` · `GET /health` |
 
 ---
 
@@ -127,6 +129,9 @@ National_Assembly_2/
 │       ├── generate.py             # LLM 답변 생성
 │       └── context_trim.py         # 컨텍스트 트리밍
 │
+├── api/
+│   └── main.py                     # FastAPI 앱 (POST /query, GET /meetings, GET /health, 모니터링 엔드포인트)
+│
 ├── service/
 │   ├── etl/                        # 데이터 파이프라인
 │   │   ├── extractor/
@@ -146,6 +151,9 @@ National_Assembly_2/
 │   │   ├── llm_client.py           # OpenAI 우선 / 로컬 HF 폴백
 │   │   └── prompt_templates.py     # 위원회 도메인 특화 프롬프트
 │   │
+│   ├── monitoring/
+│   │   └── query_logger.py         # 쿼리 로그 DB 저장 · recall=0 감지 · latency 추적
+│   │
 │   └── rag/
 │       ├── retrieval/
 │       │   ├── retriever.py         # Retriever 통합 인터페이스
@@ -159,6 +167,11 @@ National_Assembly_2/
 │           ├── eval_dataset_manual.json  # 수동 평가셋 23문항
 │           ├── ragas_eval.py             # RAGAS 자동 평가
 │           └── unanswerable_eval.py      # OOD 거부 평가
+│
+├── tests/                          # 단위 테스트 (41/41 PASS, DB 없이 실행)
+│   ├── test_chunker.py             # chunker 13개
+│   ├── test_normalizer.py          # normalizer 16개
+│   └── test_retriever.py           # retriever 내부 메서드 12개
 │
 ├── docs/
 │   ├── test.md                     # 시스템 테스트 명세 (22개)
@@ -236,6 +249,29 @@ streamlit run app.py
 
 브라우저에서 `http://localhost:8501` 접속 → 회의록 질의 페이지
 
+### 5. FastAPI 서버 실행 (선택)
+
+```powershell
+uvicorn api.main:app --reload --port 8000
+```
+
+| 엔드포인트 | 설명 |
+|-----------|------|
+| `POST /query` | 질문 → 답변 + 인용 + latency |
+| `GET /meetings` | 적재된 회의 목록 |
+| `GET /health` | DB 연결 + 청크 수 확인 |
+| `GET /logs` | 최근 쿼리 로그 |
+| `GET /logs/failures` | recall=0 질의 목록 |
+| `GET /logs/stats` | grounding 분포 · 평균 latency |
+| `GET /docs` | Swagger UI (자동 생성) |
+
+### 6. 단위 테스트 실행
+
+```powershell
+pytest tests/ -v
+# 41/41 PASS (DB 불필요)
+```
+
 ---
 
 ## 평가 실행
@@ -274,6 +310,7 @@ recall@3: 100% (10/10)
 | 계층 | 기술 |
 |------|------|
 | UI | Streamlit |
+| API | FastAPI + uvicorn |
 | RAG 오케스트레이션 | LangGraph |
 | LLM | OpenAI GPT-4o-mini (로컬 HF 폴백) |
 | 임베딩 | multilingual-e5-small (384차원) |
@@ -282,6 +319,7 @@ recall@3: 100% (10/10)
 | Neural Reranker | BAAI/bge-reranker-v2-m3 |
 | ETL | Python (pdfplumber, psycopg2) |
 | 평가 | RAGAS 0.4.x |
+| 단위 테스트 | pytest + pytest-mock |
 
 ---
 
