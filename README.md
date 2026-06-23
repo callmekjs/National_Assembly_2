@@ -200,6 +200,17 @@ National_Assembly_2/
 
 ---
 
+## 서비스 구성
+
+| 서비스   | 포트  | 볼륨           | 설명                       |
+|---------|-------|----------------|----------------------------|
+| postgres | 5432  | postgres_data  | PostgreSQL + pgvector DB   |
+| (앱)     | 8501  | —              | Streamlit (로컬 직접 실행) |
+
+> **포트 충돌 시** `.env`에서 `PG_PORT=5433`으로 변경 후 `docker-compose up -d` 재실행.
+
+---
+
 ## 빠른 시작
 
 ### 1. 환경 준비
@@ -225,6 +236,22 @@ PG_PASSWORD=post1234
 
 ```powershell
 docker-compose up -d
+```
+
+DB 기동 후 정상 여부 확인:
+
+```powershell
+python scripts/healthcheck.py
+```
+
+정상 출력:
+```
+[✅] Postgres 연결 (localhost:5432/skn_project)
+[✅] chunks 테이블: 18,048건
+[✅] embeddings_e5 테이블: 17,xxx건
+[✅] 벡터 차원: 384
+
+모든 헬스 체크 통과 ✅
 ```
 
 ### 3. 데이터 파이프라인 실행
