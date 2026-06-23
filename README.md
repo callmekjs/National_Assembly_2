@@ -246,7 +246,7 @@ python scripts/healthcheck.py
 
 정상 출력:
 ```
-[✅] Postgres 연결 (localhost:5432/skn_project)
+[✅] Postgres 연결 (localhost:5432/skn_project)  ← PG_PORT=5433이면 5433으로 표시
 [✅] chunks 테이블: 18,048건
 [✅] embeddings_e5 테이블: 17,xxx건
 [✅] 벡터 차원: 384

@@ -29,7 +29,12 @@ except ImportError:
 def _get_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Postgres + pgvector 헬스 체크")
     parser.add_argument("--pg-host", default=os.environ.get("PG_HOST", "localhost"))
-    parser.add_argument("--pg-port", type=int, default=int(os.environ.get("PG_PORT", "5432")))
+    _port_default = os.environ.get("PG_PORT", "5432")
+    try:
+        _port_default = int(_port_default)
+    except ValueError:
+        _port_default = 5432
+    parser.add_argument("--pg-port", type=int, default=_port_default)
     parser.add_argument("--pg-db", default=os.environ.get("PG_DB", "skn_project"))
     parser.add_argument("--pg-user", default=os.environ.get("PG_USER", "postgres"))
     parser.add_argument("--pg-password", default=os.environ.get("PG_PASSWORD", "post1234"))
