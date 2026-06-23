@@ -25,11 +25,11 @@ def pg_port(request):
 def db_conn(pg_port):
     try:
         conn = psycopg2.connect(
-            host="localhost",
+            host=os.environ.get("PG_HOST", "localhost"),
             port=pg_port,
-            database="skn_project",
-            user="postgres",
-            password="post1234",
+            database=os.environ.get("PG_DB", "skn_project"),
+            user=os.environ.get("PG_USER", "postgres"),
+            password=os.environ.get("PG_PASSWORD", "post1234"),
         )
     except Exception as exc:
         pytest.skip(f"DB 연결 실패 (PG_PORT={pg_port}): {exc}")

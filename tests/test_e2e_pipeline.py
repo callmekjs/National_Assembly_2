@@ -7,7 +7,8 @@ RAG 파이프라인 E2E 통합 테스트 (실제 DB 필요)
 import sys
 from pathlib import Path
 
-import psycopg2.extras
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -78,3 +79,5 @@ class TestE2EPipeline:
 
         assert answer, "답변이 비어있습니다"
         assert len(answer) > 10, f"답변이 너무 짧습니다: '{answer}'"
+        assert re.search(r'\[\d+\]', answer) or "근거:" in answer, \
+            f"답변에 출처 표기가 없습니다: '{answer[:100]}'"
