@@ -184,6 +184,10 @@ def run(state: QAState) -> QAState:
         answer = _sanitize_invalid_citations(answer, max_ref)
         state["draft_answer"] = answer
 
+        latency = state.get("latency_ms") or {}
+        latency["generate_ms"] = round(elapsed_ms, 1)
+        state["latency_ms"] = latency
+
         logger.info(
             "[Generate] ok ms=%s prompt_est_tok=%s out_est_tok=%s out_chars=%s",
             elapsed_ms,

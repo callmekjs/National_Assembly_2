@@ -23,6 +23,8 @@ class QAState(TypedDict, total=False):
     generation_skipped: str                    # 스킵 사유(e.g. "no_hits")
     llm_error_kind: Optional[str]             # "model_backend" | "exception" | None — UI에서 검색 실패와 구분
 
+    latency_ms: Dict                           # {"retrieve_ms": float, "generate_ms": float} 단계별 처리 시간
+
     # vectordb의 결과 평가 (질문-컨텍스트 매칭 품질 등)
     # evaluation_result: str                     # 예/아니오 값 (ex: yes / no)
     # evaluation_score: float                    # 평가 점수 

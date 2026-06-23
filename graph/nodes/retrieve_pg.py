@@ -1,4 +1,5 @@
 import re
+import time
 
 from graph.state import QAState
 from service.rag.retrieval.date_range import normalize_meeting_date_range
@@ -105,6 +106,7 @@ retriever = Retriever(model_type=EmbeddingModelType.MULTILINGUAL_E5_SMALL, enabl
 
 
 def run(state: QAState) -> QAState:
+    _t_retrieve_start = time.perf_counter()
     query = state.get("rewritten_query") or state.get("question", "")
     meta = state.get("meta") or {}
     top_k = int(meta.get("top_k", 5))
@@ -202,4 +204,9 @@ def run(state: QAState) -> QAState:
         }
         for r in results
     ]
+
+    latency = state.get("latency_ms") or {}
+    latency["retrieve_ms"] = round((time.perf_counter() - _t_retrieve_start) * 1000, 1)
+    state["latency_ms"] = latency
+
     return state

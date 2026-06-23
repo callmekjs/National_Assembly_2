@@ -86,20 +86,20 @@
 
 ## 4. 인프라·엔지니어링
 
-### 4-1. API 레이어
+### 4-1. API 레이어 ✅ 완료
 
-- [ ] **FastAPI 엔드포인트**: `POST /query`, `GET /meetings`
-- [ ] API 문서 자동 생성 (Swagger UI)
+- [x] **FastAPI 엔드포인트**: `POST /query`, `GET /meetings`, `GET /health` (2026-06-23)
+- [x] API 문서 자동 생성 (Swagger UI `/docs`) (2026-06-23)
 
-### 4-2. 모니터링·로깅
+### 4-2. 모니터링·로깅 ✅ 완료
 
-- [ ] **쿼리 로그 저장**: 사용자 질문·검색 결과·답변을 DB에 누적
-- [ ] **검색 실패 알림**: recall=0인 질의 자동 감지 및 로그 분리
-- [ ] **응답 지연 모니터링**: 검색·생성 단계별 latency 측정
+- [x] **쿼리 로그 저장**: query_logs 테이블 — 질문·답변·grounding_level·doc_count 누적 (2026-06-23)
+- [x] **검색 실패 알림**: recall=0 자동 감지 (`is_recall_zero`) + `GET /logs/failures` 엔드포인트 (2026-06-23)
+- [x] **응답 지연 모니터링**: retrieve_ms / generate_ms 단계별 측정 → state["latency_ms"] + DB 저장 (2026-06-23)
 
-### 4-3. 테스트
+### 4-3. 테스트 ✅ 완료
 
-- [ ] 핵심 모듈 단위 테스트: `retriever`, `chunker`, `normalizer`
+- [x] 핵심 모듈 단위 테스트: `retriever`(12개), `chunker`(13개), `normalizer`(16개) — 41/41 PASS (2026-06-23)
 - [ ] 파이프라인 E2E 통합 테스트 (미니 데이터셋)
 
 ---
