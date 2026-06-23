@@ -43,7 +43,7 @@ flowchart TD
         B --> C[LangGraph 파이프라인]
         C --> D["하이브리드 검색\n벡터+키워드+리랭크"]
         D --> E[(PostgreSQL\npgvector)]
-        C --> F["LLM 생성\nGPT-4o-mini"]
+        D --> F["LLM 생성\nGPT-4o-mini"]
         F --> G["출처 인용 답변\n[1][2] + Grounding Check"]
     end
     subgraph ETL["[전제] ETL 파이프라인"]
