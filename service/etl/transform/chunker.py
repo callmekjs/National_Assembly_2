@@ -72,6 +72,10 @@ def _make_chunks(source_id: str, text: str, metadata: dict) -> list[dict]:
         if not body:
             continue
 
+        # 발언자 경계: 다른 화자가 시작되면 overlap 초기화
+        # (이전 발언자 내용이 다음 화자 청크에 섞이는 것 방지)
+        prev_tail = ""
+
         # 발언 단위를 문장 경계에서 추가 분할
         pieces = _split_by_sentence(body, CHUNK_SIZE)
 

@@ -100,9 +100,11 @@ def run_ragas_eval(
 
     # RAGAS 평가
     print(f"\n[ragas_eval] RAGAS 평가 시작 ({len(questions)}개)...")
+    import warnings
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
     from datasets import Dataset
     from ragas import evaluate
-    from ragas.metrics.collections import faithfulness, answer_relevancy, context_precision
+    from ragas.metrics import faithfulness, answer_relevancy, context_precision
 
     data = {
         "question": questions,
@@ -113,7 +115,7 @@ def run_ragas_eval(
     metrics = [faithfulness, answer_relevancy, context_precision]
 
     if has_ground_truth:
-        from ragas.metrics.collections import context_recall
+        from ragas.metrics import context_recall
         filled_gt = [gt if gt else "정보 없음" for gt in ground_truths]
         data["ground_truth"] = filled_gt
         metrics.append(context_recall)
@@ -146,6 +148,9 @@ def run_ragas_eval(
 
     print("\n[ragas_eval] === 결과 ===")
     for k, v in scores.items():
+        if v != v:  # NaN guard
+            print(f"  {k:<22} (측정 불가 — NaN)")
+            continue
         bar = "█" * int(v * 20) + "░" * (20 - int(v * 20))
         print(f"  {k:<22} {bar} {v:.4f}")
 

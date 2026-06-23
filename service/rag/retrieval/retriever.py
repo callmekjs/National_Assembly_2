@@ -25,6 +25,7 @@ class Retriever:
         committee: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        speaker: str | None = None,
         include_metadata: bool = True,
         use_reranker: bool = False,
         include_context: bool = True,
@@ -99,6 +100,7 @@ class Retriever:
             "committee": committee or "",
             "date_from": df or "",
             "date_to": dt or "",
+            "speaker": speaker or "",
         }
         multiplier = max(1, int(candidate_multiplier))
         candidate_k = max(top_k, top_k * multiplier)
@@ -295,7 +297,7 @@ class Retriever:
         if "북핵" in q and "논의" in q:
             expansions.extend(["비핵화", "결의안"])
         if "통일부 장관" in q:
-            expansions.extend(["정동영 후보자", "2026-04-23", "통일부장관"])
+            expansions.extend(["통일부장관"])
         if "정보" in q and "공유" in q and "제한" in q:
             expansions.extend(["대북 정찰정보", "미국 동맹", "정보 공유 제한"])
         if not expansions:

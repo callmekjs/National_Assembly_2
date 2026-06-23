@@ -108,8 +108,12 @@ def _sanitize_invalid_citations(answer: str, max_ref: int) -> str:
 def build_prompts_from_state(state: QAState) -> tuple[str, str]:
     """스트리밍 생성 시 chat.py에서 직접 사용할 (system_prompt, user_prompt) 반환."""
     question = state.get("question", "")
+    committee = str(state.get("meta", {}).get("committee") or "").strip()
     context = _build_numbered_context(state) or state.get("context", "")
-    return build_system_prompt(question), build_user_prompt(question, context, reference_date=date.today())
+    doc_name_query = bool(state.get("meta", {}).get("doc_name_query"))
+    return build_system_prompt(question, committee=committee), build_user_prompt(
+        question, context, reference_date=date.today(), doc_name_query=doc_name_query
+    )
 
 
 def run(state: QAState) -> QAState:
@@ -149,11 +153,14 @@ def run(state: QAState) -> QAState:
 
     try:
         question = state.get("question", "")
+        committee = str(state.get("meta", {}).get("committee") or "").strip()
+        docs = state.get("reranked") or state.get("retrieved") or []
         context = _build_numbered_context(state) or state.get("context", "")
-        max_ref = len(state.get("citations", []))
+        max_ref = len(docs)
 
-        system_prompt = build_system_prompt(question)
-        user_prompt = build_user_prompt(question, context, reference_date=date.today())
+        doc_name_query = bool((state.get("meta") or {}).get("doc_name_query"))
+        system_prompt = build_system_prompt(question, committee=committee)
+        user_prompt = build_user_prompt(question, context, reference_date=date.today(), doc_name_query=doc_name_query)
         prompt_blob = f"{system_prompt}\n{user_prompt}"
 
         t0 = time.perf_counter()

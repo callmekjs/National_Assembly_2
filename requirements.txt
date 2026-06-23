@@ -10,6 +10,8 @@ tiktoken>=0.5.0
 pandas>=1.5.0
 lxml==5.2.1
 langgraph==0.2.61
+langchain-core>=0.2.0
+langchain>=0.2.0
 transformers==4.57.1
 PyYAML==6.0.3
 torch>=2.2

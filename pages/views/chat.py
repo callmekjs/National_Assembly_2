@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import base64
 import json
 import re
+from pathlib import Path
+
+try:
+    import fitz  # PyMuPDF
+    _FITZ_AVAILABLE = True
+except ImportError:
+    _FITZ_AVAILABLE = False
 
 import pandas as pd
 import streamlit as st
@@ -14,6 +22,9 @@ from graph.app_graph import build_app
 RAG_REF_MARKER = "<!--RAG_REFERENCES-->"
 RAG_CITATIONS_JSON_BEGIN = "<!--CITATIONS_JSON-->"
 RAG_CITATIONS_JSON_END = "<!--/CITATIONS_JSON-->"
+
+# chat.py → pages/views/chat.py : parents[2] = 프로젝트 루트
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def change_chat_theme() -> None:
@@ -111,6 +122,8 @@ SUGGESTED_QUESTIONS = [
 ]
 
 
+MAX_HISTORY_TURNS = 3  # LLM에 전달할 이전 Q&A 턴 수
+
 # 채팅 서비스 초기화
 chat_service = ChatService()
 
@@ -136,12 +149,12 @@ def render_chat_panel() -> None:
 
     # 채팅 메시지 표시
     chat_container = st.container()
-    for message in current_history:
+    for mi, message in enumerate(current_history):
         role = message["role"]
         with chat_container:
             with st.chat_message(name=role, avatar=_avatar_for(role)):
                 if role == "assistant":
-                    _render_assistant_markdown(message["content"])
+                    _render_assistant_markdown(message["content"], msg_key=str(mi))
                 else:
                     st.markdown(message["content"])
 
@@ -199,10 +212,10 @@ def _init_state() -> None:
         ("qa_use_multi_query", False),
         ("qa_use_hyde", False),
         ("qa_use_step_back", False),
-        ("qa_use_fusion", False),
+        ("qa_use_fusion", True),
         ("qa_use_parent_doc", False),
         ("qa_use_compression", False),
-        ("qa_use_neural_reranker", False),
+        ("qa_use_neural_reranker", True),
         ("qa_use_llm_reranker", False),
         ("qa_use_mmr", False),
         ("qa_mmr_lambda", 0.7),
@@ -456,11 +469,92 @@ def _delete_session(session_id: str) -> None:
                 _create_new_session()
 
 
+_HISTORY_STRIP_PREFIXES = (
+    "\n\n*⚠",       # _WARN_NONE
+    "\n\n*ℹ",       # _WARN_PARTIAL
+    "\n\n※ 본 답변은",  # disclaimer
+    "\n\n> 🔍",      # _confidence_line
+)
+
+
+def _strip_system_appends(text: str) -> str:
+    """히스토리 전달 시 LLM이 모방하지 않도록 시스템이 붙인 경고·메타 문구 제거.
+    ## 한계 섹션도 제거 — 코드가 삽입한 *(비교 근거 부족)* 등 노이즈가 포함돼 있어
+    LLM이 다음 턴에 이를 모방해 날조가 심화되는 것을 막는다.
+    """
+    # 한계 섹션 통째로 제거
+    for header in ("## 한계\n", "## 한계 \n", "## 한계"):
+        idx = text.find(header)
+        if idx != -1:
+            text = text[:idx]
+            break
+    for prefix in _HISTORY_STRIP_PREFIXES:
+        idx = text.find(prefix)
+        if idx != -1:
+            text = text[:idx]
+    return text.strip()
+
+
+def _build_history() -> list[dict]:
+    """현재 세션의 최근 N턴 Q&A를 OpenAI messages 형식으로 반환 (인용 블록·시스템 문구 제거)."""
+    session = st.session_state.chat_sessions.get(st.session_state.current_session_id, {})
+    msgs = session.get("messages", [])
+    # 마지막 1개는 방금 추가된 현재 질문 → 제외
+    history_msgs = msgs[:-1]
+
+    pairs: list[tuple[str, str]] = []
+    i = 0
+    while i < len(history_msgs):
+        m = history_msgs[i]
+        if m["role"] == "user" and i + 1 < len(history_msgs) and history_msgs[i + 1]["role"] == "assistant":
+            asst = history_msgs[i + 1]["content"]
+            if RAG_REF_MARKER in asst:
+                asst = asst[: asst.index(RAG_REF_MARKER)].strip()
+            asst = _strip_system_appends(asst)
+            pairs.append((m["content"], asst))
+            i += 2
+        else:
+            i += 1
+
+    result: list[dict] = []
+    for user_content, asst_content in pairs[-MAX_HISTORY_TURNS:]:
+        result.append({"role": "user", "content": user_content})
+        result.append({"role": "assistant", "content": asst_content})
+    return result
+
+
+def _confidence_line(
+    docs: list[dict],
+    grounding_level: str = "",
+    committee: str = "",
+) -> str:
+    """검색 결과 수 + 근거 상태 레이블 한 줄 요약."""
+    n = len(docs)
+    if not n:
+        return ""
+
+    # 근거 상태 레이블 (유사도 숫자 대신 실무 용어)
+    level_map = {
+        "FULL":    "✅ 근거 충분",
+        "PARTIAL": "⚠️ 부분 확인",
+        "NONE":    "❌ 근거 부족",
+    }
+    level_label = level_map.get(grounding_level.upper(), "")
+
+    # 검색 범위
+    scope = f"**{committee}**" if committee else "전체 위원회"
+    parts = [f"\n\n> 🔍 검색 범위: {scope} · 검토 청크 **{n}개**"]
+    if level_label:
+        parts.append(f"· 근거 상태: {level_label}")
+    return " ".join(parts)
+
+
 def _handle_user_input(user_input: str) -> None:
     from graph.nodes.generate import build_prompts_from_state, _sanitize_invalid_citations
     from service.llm.llm_client import chat_stream
 
     _append_message("user", user_input)
+    history = _build_history()
 
     # 이미 렌더된 chat_container 아래에 새 메시지 즉시 표시
     with st.chat_message("user", avatar="🧑‍💻"):
@@ -481,19 +575,95 @@ def _handle_user_input(user_input: str) -> None:
                 _render_assistant_markdown(reply)
             _append_message("assistant", reply)
         else:
-            system_prompt, user_prompt = build_prompts_from_state(lg_state)
-            with st.chat_message("assistant", avatar="🤖"):
-                streamed_text = st.write_stream(
-                    chat_stream(system_prompt, user_prompt, max_tokens=512)
+            from graph.nodes.grounding_check import (
+                _is_weak_retrieval,
+                _fix_out_of_range,
+                _move_uncited_to_limits,
+                _strip_detail_if_conclusion_refusal,
+                _validate_speaker_bullets,
+                _remove_contradictory_limits,
+                _check_per_subject_grounding,
+                _remove_unlabeled_detail_section,
+                _grounding_score,
+                _pre_normalize,
+                CITE_FULL_THRESHOLD,
+                _WARN_PARTIAL,
+                _WARN_NONE,
+                _WARN_SPEAKER_MISMATCH,
+                _REFUSAL_WEAK,
+            )
+            # 기준 5: 약한 검색 결과면 스트리밍 전에 거부
+            if _is_weak_retrieval(docs):
+                with st.chat_message("assistant", avatar="🤖"):
+                    st.warning(_REFUSAL_WEAK)
+                _append_message("assistant", _REFUSAL_WEAK)
+            else:
+                system_prompt, user_prompt = build_prompts_from_state(lg_state)
+                with st.chat_message("assistant", avatar="🤖"):
+                    streamed_text = st.write_stream(
+                        chat_stream(system_prompt, user_prompt, max_tokens=512, history=history)
+                    )
+
+                # 기준 2: [n] 범위 검증
+                clean_text = _sanitize_invalid_citations(str(streamed_text), len(docs))
+                clean_text, _ = _fix_out_of_range(clean_text, len(docs))
+
+                # 핵심 결론 '확인 불가' → 세부 근거 제거
+                clean_text, _ = _strip_detail_if_conclusion_refusal(clean_text)
+
+                # 발언자 검증: 타인 발언 이동 + 이름 교정
+                # lg_state meta 대신 user_input에서 직접 추출 (세션 캐시 Router 우회)
+                from graph.nodes.router import (
+                    _extract_query_speaker_kw,
+                    _extract_comparison_subjects,
+                )
+                _qsk = list(_extract_query_speaker_kw(user_input) or [])
+                _comp = _extract_comparison_subjects(user_input) if not _qsk else []
+                clean_text, _spk_changed = _validate_speaker_bullets(
+                    clean_text, docs, _qsk, _comp or None
                 )
 
-            max_ref = len(lg_state.get("citations", []))
-            clean_text = _sanitize_invalid_citations(str(streamed_text), max_ref)
-            disclaimer = "\n\n※ 본 답변은 회의록 기반 정보 정리 결과입니다."
-            if disclaimer not in clean_text:
-                clean_text += disclaimer
-            reply = _append_citations_block(clean_text, lg_state)
-            _append_message("assistant", reply)
+                # 비교 쿼리: 인물별 근거 존재 여부 판정 + 결론 attribution 정리
+                if _comp:
+                    clean_text, _ = _check_per_subject_grounding(clean_text, docs, _comp)
+
+                # 한계 모순 문구 제거 — 반드시 _remove_unlabeled_detail_section 전에
+                clean_text, _ = _remove_contradictory_limits(clean_text)
+
+                # 볼드 레이블 없는 세부 근거 섹션 제거
+                clean_text, _ = _remove_unlabeled_detail_section(clean_text)
+
+                # 기준 4: 미인용 문장 → ## 한계로 이동
+                # _pre_normalize: 헤더+본문 같은 줄 → 분리 후 점수 계산
+                score = _grounding_score(_pre_normalize(clean_text))
+                if score <= CITE_FULL_THRESHOLD:
+                    clean_text, _ = _move_uncited_to_limits(clean_text)
+                # 텍스트 변환 후 재채점 (move_uncited_to_limits가 구조를 바꿀 수 있음)
+                score = _grounding_score(_pre_normalize(clean_text))
+
+                # 기준 1: grounding 경고 첨부
+                if score == 0:
+                    grounding_level = "NONE"
+                    clean_text = clean_text.rstrip() + _WARN_NONE
+                elif score <= CITE_FULL_THRESHOLD:
+                    grounding_level = "PARTIAL"
+                    # 비교 쿼리 발언자 불일치가 주 원인이면 전용 경고
+                    if _comp and _spk_changed:
+                        clean_text = clean_text.rstrip() + _WARN_SPEAKER_MISMATCH
+                    else:
+                        clean_text = clean_text.rstrip() + _WARN_PARTIAL
+                else:
+                    grounding_level = "FULL"
+
+                disclaimer = "\n\n※ 본 답변은 회의록 기반 정보 정리 결과입니다."
+                if disclaimer not in clean_text:
+                    clean_text += disclaimer
+                _meta = lg_state.get("meta") or {}
+                _committee = str(_meta.get("committee") or "").strip()
+                clean_text += _confidence_line(docs, grounding_level, _committee)
+                clean_text = _renumber_citations(clean_text, lg_state)
+                reply = _append_citations_block(clean_text, lg_state)
+                _append_message("assistant", reply)
 
     except Exception as exc:
         short, detail = _format_user_error(exc)
@@ -571,14 +741,14 @@ def _parse_meeting_iso(d: str) -> date | None:
         return None
 
 
-def _summary_for_display(quote: str, item: dict) -> str:
+def _summary_for_display(quote: str, item: dict, max_len: int = 160) -> str:
     q = (quote or "").strip()
     if not q:
         fb = item.get("title") or item.get("document_name") or item.get("committee") or ""
         q = str(fb).strip() or "—"
-    if len(q) <= 40:
+    if len(q) <= max_len:
         return q
-    return q[:37].rstrip() + "..."
+    return q[:max_len - 3].rstrip() + "..."
 
 
 def _parse_citations_json(blob: str) -> list[dict] | None:
@@ -594,61 +764,151 @@ def _parse_citations_json(blob: str) -> list[dict] | None:
         return None
 
 
-def _render_references_table(citations: list[dict]) -> None:
-    """참고 자료를 표로 정렬해 표시 (본문 [n] ↔ 표 번호)."""
+def _trust_grade(item: dict, ref_d: date) -> str:
+    """출처 신뢰도 등급 (날짜와 무관하게 발언자 정보로만 판단).
+    ⭐높음: 발언자·날짜 모두 확인
+    △보통: 둘 중 하나만 확인
+    ▽낮음: 모두 미상
+    """
+    speaker = (item.get("speaker") or "").strip()
+    date_str = item.get("date") or item.get("meeting_date") or ""
+    parsed = _parse_meeting_iso(date_str)
+
+    speaker_ok = bool(speaker) and speaker != "발언자 미상"
+    date_ok = parsed is not None
+
+    if speaker_ok and date_ok:
+        return "⭐ 높음"
+    if speaker_ok or date_ok:
+        return "△ 보통"
+    return "▽ 낮음"
+
+
+def _render_references_table(citations: list[dict], used_indices: set[int] | None = None, msg_key: str = "") -> None:
+    """참고 자료를 표로 정렬해 표시 (본문 [n] ↔ 표 번호).
+    used_indices: 본문에서 실제 사용된 [n] 집합 (1-based). None이면 전체 표시.
+    """
     ref_d = date.today()
     rows: list[dict] = []
-    any_date_warn = False
     for idx, item in enumerate(citations, start=1):
+        if used_indices is not None and idx not in used_indices:
+            continue
         speaker = (item.get("speaker") or "").strip() or "발언자 미상"
         date_disp = item.get("date") or item.get("meeting_date") or "—"
         quote = (item.get("quote") or "").strip()
         summary = _summary_for_display(quote, item)
         url = (item.get("url") or "").strip()
-        link_cell = url if url.startswith(("http://", "https://")) else None
-
-        note = ""
-        parsed = _parse_meeting_iso(date_disp if date_disp != "—" else "")
-        if parsed is not None:
-            # 2025년 이후·기준일과 365일 이상 차이: ETL 중복·연도 혼선 및 시차 안내
-            if parsed >= date(2025, 1, 1) or abs((parsed - ref_d).days) >= 365:
-                note = "날짜 확인 필요"
-                any_date_warn = True
+        link_cell = url if url.startswith(("http://", "https://")) else ""
 
         rows.append(
             {
                 "번호": idx,
+                "신뢰도": _trust_grade(item, ref_d),
                 "회의일": date_disp,
                 "발언자": speaker,
-                "인용 요약 (40자)": summary,
+                "인용 내용": summary,
                 "링크": link_cell,
-                "비고": note,
             }
         )
 
+    if not rows:
+        st.caption("본문에서 사용된 인용 출처가 없습니다.")
+        return
     st.caption(
-        "본문 **`[n]`** 과 표의 **번호** 열이 대응합니다. 인용 요약은 40자 이내로 잘립니다."
+        "본문 **`[n]`** 과 **번호** 열이 대응합니다 · 인용 내용은 실제 발언 최대 160자입니다 · "
+        "전체 원문은 아래 '인용 청크 원문 보기'에서 확인하세요."
     )
     df = pd.DataFrame(rows)
+    has_url = any(r.get("링크") for r in rows)
+    link_col_cfg = (
+        st.column_config.LinkColumn("원문", display_text="열기", width="small")
+        if has_url
+        else st.column_config.TextColumn("원문", width="small")
+    )
     st.dataframe(
         df,
         column_config={
             "번호": st.column_config.NumberColumn("번호", format="%d", width="small"),
+            "신뢰도": st.column_config.TextColumn("신뢰도", width="small"),
             "회의일": st.column_config.TextColumn("회의일", width="small"),
-            "발언자": st.column_config.TextColumn("발언자", width="small"),
-            "인용 요약 (40자)": st.column_config.TextColumn("인용 요약", width="large"),
-            "링크": st.column_config.LinkColumn(
-                "원문",
-                display_text="열기",
-                width="small",
-            ),
-            "비고": st.column_config.TextColumn("비고", width="small"),
+            "발언자": st.column_config.TextColumn("발언자", width="medium"),
+            "인용 내용": st.column_config.TextColumn("인용 내용 (실제 발언)", width="large"),
+            "링크": link_col_cfg,
         },
         hide_index=True,
         use_container_width=True,
     )
-    if any_date_warn:
-        st.caption("*일부 출처의 날짜가 질문 시점과 다를 수 있습니다.*")
+
+    # 검색 청크 보기
+    filtered = [
+        (idx, item) for idx, item in enumerate(citations, start=1)
+        if (used_indices is None or idx in used_indices) and (item.get("chunk_text") or "").strip()
+    ]
+    if filtered:
+        # 같은 발언자·같은 날짜 인접 청크 병합
+        merged = _merge_adjacent_chunks(filtered)
+        with st.expander("📄 검색 청크 보기 (발언 원문)", expanded=False):
+            st.caption(
+                "DB에서 가져온 발언 원문입니다. "
+                "같은 발언자·같은 회의의 인접 청크는 자동으로 합쳐 표시합니다. "
+                "중복 overlap·메타데이터는 제거됩니다."
+            )
+            for group in merged:
+                indices = group["indices"]
+                speaker = group["speaker"]
+                date_str = group["date"]
+                chunk = group["chunk_text"]
+
+                idx_label = ", ".join(f"[{i}]" for i in indices)
+                source_path_str = ""
+                if citations and indices:
+                    first_idx = indices[0] - 1  # 0-based
+                    if 0 <= first_idx < len(citations):
+                        ci = citations[first_idx]
+                        source_path_str = ci.get("source_path", "")
+
+                header_col, btn_col = st.columns([6, 1])
+                with header_col:
+                    st.markdown(f"**{idx_label} {speaker}** ({date_str})")
+                with btn_col:
+                    _render_pdf_download_button(source_path_str, indices, msg_key=msg_key)
+
+                excerpt = _extract_key_sentences(chunk, max_sentences=6)
+                if excerpt != chunk:
+                    st.text(excerpt)
+                    st.caption("↑ 앞쪽 핵심 문장을 발췌했습니다.")
+                else:
+                    st.text(chunk)
+
+                # 원본 PDF 페이지 인라인 뷰어
+                if source_path_str and _FITZ_AVAILABLE:
+                    pdf_path = _PROJECT_ROOT / Path(source_path_str.replace("\\", "/"))
+                    if pdf_path.exists():
+                        ck = "_".join(str(i) for i in indices)
+                        show_pg = st.checkbox(
+                            "📖 원본 페이지 보기",
+                            key=f"show_pg_{msg_key}_{ck}",
+                        )
+                        if show_pg:
+                            with st.spinner("페이지 불러오는 중..."):
+                                img_bytes, page_num, matched = _render_chunk_page_image(
+                                    str(pdf_path), chunk
+                                )
+                            if img_bytes:
+                                if matched:
+                                    st.caption(
+                                        f"📄 **{pdf_path.name}** · {page_num}쪽"
+                                        " (노란색: 해당 발언)"
+                                    )
+                                else:
+                                    st.caption(
+                                        f"📄 **{pdf_path.name}** · {page_num}쪽"
+                                        " (발언 위치 자동 탐색 실패 — 전체 파일은 📄 PDF 버튼)"
+                                    )
+                                st.image(img_bytes, use_container_width=True)
+                            else:
+                                st.caption("PyMuPDF로 페이지를 렌더링할 수 없습니다.")
+                st.divider()
 
 
 def _append_citations_block(answer: str, state: dict) -> str:
@@ -707,7 +967,200 @@ def _render_markdown_sections(body: str) -> None:
             st.markdown(part)
 
 
-def _render_assistant_markdown(content: str) -> None:
+def _remove_overlap(a: str, b: str, min_len: int = 30) -> str:
+    """b의 앞부분이 a 안에 포함되면 그 부분을 b에서 제거.
+    단순 tail-head 비교가 아닌 substring 검색으로 더 넓은 범위 탐지.
+    """
+    max_check = min(len(b), 300)
+    for length in range(max_check, min_len - 1, -1):
+        prefix = b[:length]
+        if prefix in a:
+            return b[length:].lstrip()
+    return b
+
+
+def _merge_adjacent_chunks(
+    filtered: list[tuple[int, dict]],
+) -> list[dict]:
+    """같은 발언자·같은 날짜의 인접 청크를 병합해 반환."""
+    if not filtered:
+        return []
+    groups: list[dict] = []
+    for idx, item in filtered:
+        speaker = (item.get("speaker") or "미상").strip()
+        date_str = (item.get("date") or item.get("meeting_date") or "—").strip()
+        chunk = (item.get("chunk_text") or "").strip()
+        if (
+            groups
+            and groups[-1]["speaker"] == speaker
+            and groups[-1]["date"] == date_str
+        ):
+            prev = groups[-1]["chunk_text"]
+            extra = _remove_overlap(prev, chunk)
+            if extra and extra != chunk:
+                groups[-1]["chunk_text"] = prev.rstrip() + " " + extra
+            elif not extra:
+                pass  # 완전히 포함된 청크 — 무시
+            else:
+                groups[-1]["chunk_text"] = prev.rstrip() + "\n" + chunk
+            groups[-1]["indices"].append(idx)
+        else:
+            groups.append({"indices": [idx], "speaker": speaker, "date": date_str, "chunk_text": chunk})
+    return groups
+
+
+def _extract_key_sentences(chunk: str, max_sentences: int = 6) -> str:
+    """청크가 길면 앞쪽 핵심 문장만 반환 (중복 tail 표시 없이 앞에서 자름)."""
+    sents = re.split(r"(?<=[다요임까함됩니겠었했죠네음어]\.)\s*", chunk)
+    sents = [s.strip() for s in sents if s.strip()]
+    if len(sents) <= max_sentences:
+        return chunk
+    return " ".join(sents[:max_sentences]) + " …"
+
+
+def _likms_search_url(committee: str, date_str: str) -> str:
+    """국회 회의록 시스템(LIKMS) 검색 URL 생성."""
+    base = "https://likms.assembly.go.kr/record/mhs-40-010.do"
+    # 날짜에서 연도 추출
+    year = date_str[:4] if date_str and len(date_str) >= 4 else ""
+    params = []
+    if committee:
+        params.append(f"searchCommittee={committee}")
+    if year:
+        params.append(f"searchYear={year}")
+    if params:
+        return base + "?" + "&".join(params)
+    return base
+
+
+@st.cache_data(show_spinner=False)
+def _render_chunk_page_image(pdf_path_str: str, chunk_text: str) -> tuple[bytes, int, bool]:
+    """청크가 있는 PDF 페이지를 PNG 이미지로 렌더링.
+    반환: (png_bytes, 1-based 페이지 번호, 텍스트 매칭 성공 여부).
+    텍스트를 찾지 못하면 1페이지를 fallback으로 반환 (matched=False).
+    """
+    _FALLBACK = b""  # fitz 없을 때 반환값
+    if not _FITZ_AVAILABLE:
+        return _FALLBACK, 0, False
+    try:
+        doc = fitz.open(pdf_path_str)
+    except Exception:
+        return _FALLBACK, 0, False
+
+    raw = re.sub(r"\s+", " ", chunk_text.strip())
+    n = len(raw)
+    candidates: list[str] = []
+    for start in [0, n // 5, n // 4, n // 3, n // 2]:
+        for length in [40, 25, 15]:
+            phrase = raw[start : start + length].strip()
+            if len(phrase) >= 10 and phrase not in candidates:
+                candidates.append(phrase)
+
+    found_page: int | None = None
+    found_rects: list = []
+
+    for probe in candidates:
+        # 1차: PyMuPDF 네이티브 검색 (레이아웃 기반, 가장 정확)
+        for pn in range(len(doc)):
+            rects = doc[pn].search_for(probe)
+            if rects:
+                found_page = pn
+                found_rects = rects
+                break
+        if found_page is not None:
+            break
+        # 2차: 추출 텍스트 공백 정규화 비교
+        norm_probe = re.sub(r"\s+", " ", probe)
+        for pn in range(len(doc)):
+            if norm_probe in re.sub(r"\s+", " ", doc[pn].get_text()):
+                found_page = pn
+                break
+        if found_page is not None:
+            break
+        # 3차: 공백 완전 제거 (한국어 PDF 단어 분리 편차 대응)
+        no_sp = re.sub(r"\s+", "", probe)
+        if len(no_sp) < 8:
+            continue
+        for pn in range(len(doc)):
+            if no_sp in re.sub(r"\s+", "", doc[pn].get_text()):
+                found_page = pn
+                break
+        if found_page is not None:
+            break
+
+    matched = found_page is not None
+    if not matched:
+        # fallback: 1페이지 (표지/목차 건너뜀)
+        found_page = min(2, len(doc) - 1)
+
+    page = doc[found_page]
+    if found_rects:
+        for rect in found_rects:
+            annot = page.add_highlight_annot(rect.quad)
+            annot.set_colors(stroke=[1, 0.88, 0])
+            annot.update()
+
+    mat = fitz.Matrix(1.8, 1.8)
+    pix = page.get_pixmap(matrix=mat)
+    img_bytes = pix.tobytes("png")
+    doc.close()
+    return img_bytes, found_page + 1, matched
+
+
+def _render_pdf_download_button(source_path: str, indices: list[int], msg_key: str = "") -> None:
+    """로컬 크롤링 PDF 파일을 다운로드 버튼으로 제공.
+    source_path가 없거나 파일이 없으면 아무것도 렌더링하지 않는다.
+    """
+    if not source_path:
+        return
+    pdf_path = _PROJECT_ROOT / Path(source_path.replace("\\", "/"))
+    if not pdf_path.exists():
+        return
+    idx_part = "_".join(str(i) for i in indices)
+    key = f"pdf_dl_{msg_key}_{idx_part}"
+    try:
+        pdf_bytes = pdf_path.read_bytes()
+    except OSError:
+        return
+    st.download_button(
+        label="📄 PDF",
+        data=pdf_bytes,
+        file_name=pdf_path.name,
+        mime="application/pdf",
+        key=key,
+    )
+
+
+def _extract_used_indices(text: str) -> set[int]:
+    """본문에서 실제 사용된 [n] 번호 집합 (1-based) 반환."""
+    return {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]", text)}
+
+
+def _renumber_citations(text: str, state: dict) -> str:
+    """본문 [n]을 1부터 순서대로 재번호 매기고 state["citations"]도 같이 필터링.
+    예: 본문이 [2][3][5]만 사용하면 → [1][2][3]으로 바꾸고 citations도 그 3개만 유지.
+    """
+    used = _extract_used_indices(text)
+    if not used:
+        state["citations"] = []  # 인용 없으면 참고자료 테이블 자체를 숨김
+        return text
+    sorted_used = sorted(used)
+    remap = {old: new for new, old in enumerate(sorted_used, start=1)}
+    new_text = re.sub(
+        r"\[(\d+)\]",
+        lambda m: f"[{remap.get(int(m.group(1)), int(m.group(1)))}]",
+        text,
+    )
+    original = state.get("citations") or []
+    state["citations"] = [
+        original[i - 1]
+        for i in sorted_used
+        if 1 <= i <= len(original)
+    ]
+    return new_text
+
+
+def _render_assistant_markdown(content: str, msg_key: str = "") -> None:
     """본문은 섹션 단위로 정리해 표시, 참고 자료는 펼침 영역."""
     if RAG_REF_MARKER in content:
         main, _, refs = content.partition(RAG_REF_MARKER)
@@ -716,10 +1169,19 @@ def _render_assistant_markdown(content: str) -> None:
         if main:
             _render_markdown_sections(main)
         if refs:
-            with st.expander("📚 참고 자료 (회의록 근거)", expanded=True):
-                parsed = _parse_citations_json(refs)
+            parsed = _parse_citations_json(refs)
+            total = len(parsed) if parsed else 0
+            used = _extract_used_indices(main) if parsed else set()
+            used_count = len([i for i in used if 1 <= i <= total])
+            with st.expander("📚 참고 자료 — 회의록 근거 출처", expanded=True):
                 if parsed is not None:
-                    _render_references_table(parsed)
+                    if total > used_count > 0:
+                        st.info(
+                            f"검색된 청크 **{total}개** 검토 → 본문에서 직접 인용한 **{used_count}개** 출처만 표시합니다.  \n"
+                            f"나머지 {total - used_count}개는 답변 맥락 파악에 활용했으나 직접 인용되지 않았습니다.",
+                            icon="ℹ️",
+                        )
+                    _render_references_table(parsed, used_indices=used if used else None, msg_key=msg_key)
                 else:
                     _render_markdown_sections(refs)
     else:

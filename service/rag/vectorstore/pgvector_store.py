@@ -47,6 +47,10 @@ class PgVectorStore:
             if date_to:
                 where_parts.append("COALESCE(c.metadata->>'meeting_date', '') <= %s")
                 params.append(date_to)
+            speaker = str(filters.get("speaker") or "").strip()
+            if speaker:
+                where_parts.append("COALESCE(c.metadata->>'speaker', '') LIKE %s")
+                params.append(f"%{speaker}%")
 
         if where_parts:
             sql += " WHERE " + " AND ".join(where_parts)

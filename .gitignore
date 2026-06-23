@@ -264,3 +264,7 @@ streamlit_out.txt
 streamlit_err.txt
 .notion_sync_state.json
 notion_url.txt
+
+_tmp_check.py
+스크린샷/
+*ragas_out.txt

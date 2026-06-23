@@ -13,10 +13,7 @@ from pathlib import Path
 from typing import Dict, Generator
 
 import requests
-import torch
 from dotenv import load_dotenv
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
 
 _ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_ROOT / ".env", override=True)
@@ -53,6 +50,7 @@ def _use_openai() -> bool:
 
 
 def _torch_dtype():
+    import torch
     if HF_DEVICE_MAP == "cpu":
         return torch.float32
     return {
@@ -67,6 +65,7 @@ def _hf_auth_kwargs() -> Dict[str, str]:
 
 
 def _load_tokenizer(path_or_id: str):
+    from transformers import AutoTokenizer
     return AutoTokenizer.from_pretrained(
         path_or_id,
         use_fast=True,
@@ -76,6 +75,8 @@ def _load_tokenizer(path_or_id: str):
 
 
 def _load_model_lora(base_path: str, lora_path: str):
+    from transformers import AutoModelForCausalLM
+    from peft import PeftModel
     if HF_4BIT:
         from transformers import BitsAndBytesConfig
 
@@ -127,7 +128,7 @@ def _load():
     return _tokenizer, _model
 
 
-def _apply_chat_template_safe(tokenizer, messages) -> torch.Tensor:
+def _apply_chat_template_safe(tokenizer, messages):
     try:
         return tokenizer.apply_chat_template(
             messages, add_generation_prompt=True, return_tensors="pt"
@@ -144,7 +145,10 @@ def _apply_chat_template_safe(tokenizer, messages) -> torch.Tensor:
         return tokenizer(prompt, return_tensors="pt").input_ids
 
 
-def _stream_openai(system: str, user: str, max_tokens: int) -> Generator[str, None, None]:
+def _stream_openai(
+    system: str, user: str, max_tokens: int,
+    history: list[dict] | None = None,
+) -> Generator[str, None, None]:
     api_key = _openai_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY 없음")
@@ -152,12 +156,13 @@ def _stream_openai(system: str, user: str, max_tokens: int) -> Generator[str, No
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    messages = [{"role": "system", "content": system.strip()}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user.strip()})
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system.strip()},
-            {"role": "user", "content": user.strip()},
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
         "stream": True,
@@ -187,12 +192,15 @@ def _stream_openai(system: str, user: str, max_tokens: int) -> Generator[str, No
                 continue
 
 
-def chat_stream(system: str, user: str, max_tokens: int = 512) -> Generator[str, None, None]:
+def chat_stream(
+    system: str, user: str, max_tokens: int = 512,
+    history: list[dict] | None = None,
+) -> Generator[str, None, None]:
     """OpenAI SSE 스트리밍. 로컬 HF는 비스트리밍 폴백(한 번에 전체 반환)."""
     if _use_openai():
         try:
             print("[LLM] stream=True backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
-            yield from _stream_openai(system, user, max_tokens)
+            yield from _stream_openai(system, user, max_tokens, history=history)
             return
         except Exception as exc:
             print(f"[LLM] OpenAI stream 실패: {exc}", file=sys.stderr)
@@ -201,7 +209,7 @@ def chat_stream(system: str, user: str, max_tokens: int = 512) -> Generator[str,
                 return
     try:
         print("[LLM] stream=fallback backend=local_hf", file=sys.stderr)
-        yield _chat_local_hf(system, user, max_tokens)
+        yield _chat_local_hf(system, user, max_tokens, history=history)
     except Exception as exc:
         yield (
             "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
@@ -209,7 +217,10 @@ def chat_stream(system: str, user: str, max_tokens: int = 512) -> Generator[str,
         )
 
 
-def _chat_openai(system: str, user: str, max_tokens: int) -> str:
+def _chat_openai(
+    system: str, user: str, max_tokens: int,
+    history: list[dict] | None = None,
+) -> str:
     api_key = _openai_key()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY 없음")
@@ -217,12 +228,13 @@ def _chat_openai(system: str, user: str, max_tokens: int) -> str:
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    messages = [{"role": "system", "content": system.strip()}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user.strip()})
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system.strip()},
-            {"role": "user", "content": user.strip()},
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
     }
@@ -233,17 +245,20 @@ def _chat_openai(system: str, user: str, max_tokens: int) -> str:
     return str(data["choices"][0]["message"]["content"]).strip()
 
 
-def _chat_local_hf(system: str, user: str, max_tokens: int) -> str:
+def _chat_local_hf(
+    system: str, user: str, max_tokens: int,
+    history: list[dict] | None = None,
+) -> str:
     print("[LLM] HF_REPO_ID =", HF_REPO_ID, file=sys.stderr)
     print("[LLM] HF_BASE_MODEL =", HF_BASE_MODEL, file=sys.stderr)
     print("[LLM] CWD =", os.getcwd(), file=sys.stderr)
 
     tokenizer, model = _load()
 
-    messages = [
-        {"role": "system", "content": system.strip()},
-        {"role": "user", "content": user.strip()},
-    ]
+    messages = [{"role": "system", "content": system.strip()}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user.strip()})
     input_ids = _apply_chat_template_safe(tokenizer, messages).to(model.device)
     attention_mask = (input_ids != tokenizer.pad_token_id).long()
     attention_mask = attention_mask.to(model.device)
@@ -299,7 +314,10 @@ def llm_env_probe() -> tuple[bool, str]:
     return True, ""
 
 
-def chat(system: str, user: str, max_tokens: int = 512) -> str:
+def chat(
+    system: str, user: str, max_tokens: int = 512,
+    history: list[dict] | None = None,
+) -> str:
     """
     OPENAI_API_KEY + (FORCE_LOCAL_LLM 아님) → OpenAI.
     실패 시 로컬 HF(OPENAI_ONLY=1 이면 짧은 오류 문자열만 반환).
@@ -309,7 +327,7 @@ def chat(system: str, user: str, max_tokens: int = 512) -> str:
     if _use_openai():
         try:
             print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
-            return _chat_openai(system, user, max_tokens)
+            return _chat_openai(system, user, max_tokens, history=history)
         except Exception as exc:
             print(f"[LLM] OpenAI 실패: {exc}", file=sys.stderr)
             if (os.getenv("OPENAI_ONLY") or "").lower() in ("1", "true", "yes"):
@@ -320,7 +338,7 @@ def chat(system: str, user: str, max_tokens: int = 512) -> str:
 
     try:
         print("[LLM] backend=local_hf", file=sys.stderr)
-        return _chat_local_hf(system, user, max_tokens)
+        return _chat_local_hf(system, user, max_tokens, history=history)
     except Exception as exc:
         return (
             "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "

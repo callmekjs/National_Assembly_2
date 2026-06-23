@@ -5,7 +5,7 @@ import re
 from graph.state import QAState
 
 
-def _quote_snippet(chunk_text: str, max_len: int = 200) -> str:
+def _quote_snippet(chunk_text: str, max_len: int = 160) -> str:
     """
     청크 앞부분이 발언 중간에서 끊기면 인용이 어색하다.
     앞쪽 짧은 구간에서 문장 끝을 찾아 그 이후부터 스니펫을 잡는다.
@@ -73,6 +73,9 @@ def run(state: QAState) -> QAState:
                 "chunk_id": d.get("chunk_id", ""),
                 "speaker": sp or "발언자 미상",
                 "quote": _quote_snippet(d.get("chunk_text", "") or ""),
+                "chunk_text": (d.get("chunk_text") or "").strip(),
+                "source_path": str(meta.get("source_path") or "").strip(),
+                "committee": str(meta.get("committee") or "").strip(),
             }
         )
     return state

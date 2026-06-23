@@ -12,7 +12,9 @@ class QAState(TypedDict, total=False):
     
     draft_answer: str                          # LLM으로부터 받은 초안 답변
     citations: List[Dict]                      # 최종 답변 레퍼런스 [{source_id, date, url, title, chunk_id}]
-    grounded: bool                             # 답변이 원문 근거 기반으로 작성됐는지 (Grounding)
+    grounded: bool                             # 답변에 [n] 인용이 1개 이상 있는지
+    grounding_score: float                     # 의미 있는 줄 중 인용 있는 줄 비율 (0.0~1.0)
+    grounding_level: str                       # "FULL" | "PARTIAL" | "NONE"
     policy_flag: Optional[str]                 # 정책 위반 감지시 flag (ex: 금지 발언, OOS 등)
     
     meta: Dict                                 # {"top_k":int, "rerank_n":int, "max_ctx_tokens":int, ...} 등 질의 처리 주요 파라미터

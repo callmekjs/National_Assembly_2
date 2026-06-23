@@ -3,6 +3,14 @@
 > **메인 스토리: 회의록을 검색해 근거를 붙인 뒤 LLM으로 답하는 RAG.**  
 > **전제 레이어: 그 검색을 가능하게 하는 데이터 파이프라인·벡터 DB.**
 
+| 문서 | 내용 |
+|------|------|
+| [ROADMAP.md](ROADMAP.md) | 앞으로 무엇을 할 것인가? |
+| [CHANGELOG.md](CHANGELOG.md) | 지금까지 무엇이 완성됐는가? |
+| [EVALUATION.md](EVALUATION.md) | 성능이 좋다는 근거는 무엇인가? |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 왜 이렇게 설계했는가? |
+| [docs/dev-log/](docs/dev-log/) | 개발 과정에서 구체적으로 무엇을 했는가? |
+
 `회의록 질의`(Streamlit · LangGraph)는 **검색만으로는 끝나지 않으며**, 답변 생성 단계에서 **`OPENAI_API_KEY`가 `.env`에 있으면 OpenAI Chat API를 우선** 사용하고(`OPENAI_MODEL` 등), 없거나 실패 시 **로컬 HF**(`service/llm/llm_client.py`)로 폴백합니다. CLI `qa_demo`는 OpenAI 키 유무에 따라 경로가 다를 수 있습니다(본문 하단 참고).
 
 ---
@@ -275,8 +283,8 @@ National_Assembly_2/
 - 운영 가이드: `OPERATIONS.md`, 파이프라인 로그 표준 및 이중 재실행 검증(`run_pipeline.ps1 -VerifyIdempotent`)
 
 ### 다음 단계
-- 회의록 PDF 전용 수집/추출 고도화, 발언자 단위 분리 정확도 개선
-- 평가 난항 질의(예: 키워드 정밀 검색 필요 케이스) 지속 튜닝
+
+[ROADMAP.md](ROADMAP.md) 참고 — Day 14~15 배포·발표, 멀티턴, FastAPI, 데이터 확장 등.
 
 ---
 
