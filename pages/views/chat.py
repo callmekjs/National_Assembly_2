@@ -259,6 +259,7 @@ def _build_search_meta_from_session() -> dict:
         "use_score_norm": bool(st.session_state.get("qa_use_score_norm", False)),
         "use_ensemble_reranker": bool(st.session_state.get("qa_use_ensemble_reranker", False)),
         "eval_recall": bool(st.session_state.get("qa_eval_recall", False)),
+        "use_v2_retrieval": True,
     }
 
 
