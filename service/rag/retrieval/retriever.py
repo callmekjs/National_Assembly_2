@@ -9,6 +9,33 @@ from service.rag.retrieval.reranker import create_default_reranker
 from service.rag.vectorstore.pgvector_store import PgVectorStore
 
 
+def _rrf_merge(
+    vector_hits: list[dict],
+    fts_hits: list[dict],
+    k: int = 60,
+    top_n: int | None = None,
+) -> list[dict]:
+    """Reciprocal Rank Fusion. score(d) += 1/(k+rank). chunk_id로 중복 제거."""
+    scores: dict[str, float] = {}
+    items: dict[str, dict] = {}
+    for rank, hit in enumerate(vector_hits, start=1):
+        cid = hit.get("chunk_id", "")
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        if cid not in items:
+            items[cid] = hit
+    for rank, hit in enumerate(fts_hits, start=1):
+        cid = hit.get("chunk_id", "")
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        if cid not in items:
+            items[cid] = hit
+    merged = sorted(items.values(), key=lambda x: scores.get(x.get("chunk_id", ""), 0.0), reverse=True)
+    if top_n is not None:
+        merged = merged[:top_n]
+    for hit in merged:
+        hit["rrf_score"] = scores.get(hit.get("chunk_id", ""), 0.0)
+    return merged
+
+
 class Retriever:
     def __init__(self, model_type: EmbeddingModelType, enable_temporal_filter: bool = False):
         self.model_type = model_type
@@ -303,3 +330,54 @@ class Retriever:
         if not expansions:
             return q
         return f"{q} {' '.join(expansions)}".strip()
+
+    def search_v2(
+        self,
+        query: str,
+        top_k: int = 5,
+        committee: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        speaker: str | None = None,
+        use_neural_reranker: bool = False,
+    ) -> list[dict]:
+        """True Hybrid: vector top-50 + FTS top-50 → RRF → top_k."""
+        from service.rag.retrieval.date_range import normalize_meeting_date_range
+        vector = self.encoder.encode_query(query)
+        df, dt = normalize_meeting_date_range(date_from, date_to)
+        filters = {
+            "committee": committee or "",
+            "date_from": df or "",
+            "date_to": dt or "",
+            "speaker": speaker or "",
+        }
+        vector_results = self.store.search_similar_v2(vector, top_k=50, filters=filters)
+        fts_results = self.store.search_keyword_v2(query, top_k=50, filters=filters)
+
+        def _to_dict(row: "SearchResult") -> dict:
+            return {
+                "content": row.content,
+                "chunk_id": row.chunk_id,
+                "source_id": row.source_id,
+                "date": row.metadata.get("meeting_date", ""),
+                "title": row.metadata.get("section", ""),
+                "url": row.metadata.get("url", ""),
+                "similarity": row.similarity,
+                "hybrid_score": row.similarity,
+                "metadata": row.metadata,
+            }
+
+        vec_dicts = [_to_dict(r) for r in vector_results]
+        fts_dicts = [_to_dict(r) for r in fts_results]
+        merged = _rrf_merge(vec_dicts, fts_dicts, k=60, top_n=top_k * 10)
+
+        for hit in merged:
+            hit["hybrid_score"] = hit.get("rrf_score", 0.0)
+
+        if use_neural_reranker and merged:
+            from service.rag.retrieval.reranker import create_neural_reranker
+            merged = create_neural_reranker().rerank(query, merged, top_k=top_k)
+        else:
+            merged = merged[:top_k]
+
+        return merged

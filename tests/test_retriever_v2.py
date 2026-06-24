@@ -1,0 +1,59 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from service.rag.retrieval.retriever import _rrf_merge
+
+
+def _hit(chunk_id: str, content: str = "내용") -> dict:
+    return {"chunk_id": chunk_id, "content": content, "similarity": 0.9, "source_id": "src"}
+
+
+def test_empty_both_returns_empty():
+    assert _rrf_merge([], []) == []
+
+
+def test_vector_only():
+    result = _rrf_merge([_hit("A"), _hit("B")], [])
+    assert [r["chunk_id"] for r in result] == ["A", "B"]
+
+
+def test_fts_only():
+    result = _rrf_merge([], [_hit("C"), _hit("D")])
+    assert [r["chunk_id"] for r in result] == ["C", "D"]
+
+
+def test_overlap_deduplicates():
+    vector = [_hit("A"), _hit("B")]
+    fts = [_hit("B"), _hit("C")]
+    result = _rrf_merge(vector, fts)
+    ids = [r["chunk_id"] for r in result]
+    assert len(ids) == len(set(ids))
+
+
+def test_overlap_boosts_score():
+    # B가 두 리스트 모두 rank=1 → A(벡터 rank=2)보다 높아야 함
+    vector = [_hit("A"), _hit("B")]
+    fts = [_hit("B"), _hit("C")]
+    result = _rrf_merge(vector, fts)
+    ids = [r["chunk_id"] for r in result]
+    assert ids[0] == "B"
+
+
+def test_top_n_limits_output():
+    vector = [_hit(f"V{i}") for i in range(10)]
+    fts = [_hit(f"F{i}") for i in range(10)]
+    result = _rrf_merge(vector, fts, top_n=5)
+    assert len(result) == 5
+
+
+def test_rrf_score_field_present():
+    result = _rrf_merge([_hit("A")], [])
+    assert "rrf_score" in result[0]
+
+
+def test_rrf_score_correct_formula():
+    # rank=1, k=60 → score = 1/61
+    result = _rrf_merge([_hit("A")], [])
+    assert abs(result[0]["rrf_score"] - 1 / 61) < 1e-9
