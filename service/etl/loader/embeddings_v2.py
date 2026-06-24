@@ -80,7 +80,7 @@ def run(
 
     skip_existing = not force
     with conn.cursor() as cur:
-        cur.execute(_build_count_sql(skip_existing=True))
+        cur.execute(_build_count_sql(skip_existing=skip_existing))
         total_pending = int(cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM chunks_v2 WHERE section_type = 'body'")
         total_all = int(cur.fetchone()[0])
@@ -99,25 +99,27 @@ def run(
     processed = 0
     batch_num = 0
 
-    with conn.cursor() as cur:
-        cur.execute(iter_sql)
-        while True:
-            rows = cur.fetchmany(200)
-            if not rows:
-                break
-            for row in rows:
-                batch.append(_parse_db_row(row))
-                if len(batch) >= batch_size:
-                    _flush(batch, encoder, conn, batch_num := batch_num + 1)
-                    processed += len(batch)
-                    batch = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(iter_sql)
+            while True:
+                rows = cur.fetchmany(200)
+                if not rows:
+                    break
+                for row in rows:
+                    batch.append(_parse_db_row(row))
+                    if len(batch) >= batch_size:
+                        _flush(batch, encoder, conn, batch_num := batch_num + 1)
+                        processed += len(batch)
+                        batch = []
 
-    if batch:
-        _flush(batch, encoder, conn, batch_num + 1)
-        processed += len(batch)
+        if batch:
+            _flush(batch, encoder, conn, batch_num + 1)
+            processed += len(batch)
+    finally:
+        conn.close()
 
     print(f"[embed_v2] done total_embedded={processed}")
-    conn.close()
     return {"embedded": processed, "skipped": skipped}
 
 

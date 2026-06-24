@@ -54,6 +54,6 @@ def test_rrf_score_field_present():
 
 
 def test_rrf_score_correct_formula():
-    # rank=1, k=60 → score = 1/61
+    # rank=1, k=60 → score = 1/61 ≈ 0.016393 (rounded to 6 decimal places)
     result = _rrf_merge([_hit("A")], [])
-    assert abs(result[0]["rrf_score"] - 1 / 61) < 1e-9
+    assert abs(result[0]["rrf_score"] - 1 / 61) < 1e-6

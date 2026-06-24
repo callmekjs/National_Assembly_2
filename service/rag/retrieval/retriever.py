@@ -15,25 +15,9 @@ def _rrf_merge(
     k: int = 60,
     top_n: int | None = None,
 ) -> list[dict]:
-    """Reciprocal Rank Fusion. score(d) += 1/(k+rank). chunk_id로 중복 제거."""
-    scores: dict[str, float] = {}
-    items: dict[str, dict] = {}
-    for rank, hit in enumerate(vector_hits, start=1):
-        cid = hit.get("chunk_id", "")
-        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
-        if cid not in items:
-            items[cid] = hit
-    for rank, hit in enumerate(fts_hits, start=1):
-        cid = hit.get("chunk_id", "")
-        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
-        if cid not in items:
-            items[cid] = hit
-    merged = sorted(items.values(), key=lambda x: scores.get(x.get("chunk_id", ""), 0.0), reverse=True)
-    if top_n is not None:
-        merged = merged[:top_n]
-    for hit in merged:
-        hit["rrf_score"] = scores.get(hit.get("chunk_id", ""), 0.0)
-    return merged
+    from service.rag.retrieval.multi_query import rrf_merge as _rrf
+    merged = _rrf([vector_hits, fts_hits], k=k)
+    return merged[:top_n] if top_n is not None else merged
 
 
 class Retriever:

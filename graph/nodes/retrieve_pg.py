@@ -174,13 +174,16 @@ def run(state: QAState) -> QAState:
     #st.write (comparison_subjects)
     # v2 검색 경로 (use_v2_retrieval=True)
     if use_v2_retrieval:
+        if len(comparison_subjects) == 2:
+            print("[Retrieve] use_v2_retrieval=True — 비교쿼리 병렬 검색 미지원, 통합 v2 검색으로 대체")
         results = retriever.search_v2(
             query=query,
             top_k=top_k,
             committee=committee,
             date_from=date_from,
             date_to=date_to,
-            use_neural_reranker=bool(meta.get("use_neural_reranker", False)),
+            speaker=meta.get("speaker") or None,
+            use_neural_reranker=use_neural_reranker,
         )
     # v1 검색 경로 (기존 로직 완전 유지)
     elif len(comparison_subjects) == 2:
