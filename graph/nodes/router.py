@@ -3,8 +3,11 @@ import re
 
 from graph.state import QAState
 from graph.utils.level import defaults
+from service.rag.retrieval.temporal_parser import NationalAssemblyTemporalParser
 
 logger = logging.getLogger(__name__)
+
+_temporal_parser = NationalAssemblyTemporalParser()
 
 # 질문에 특정 문서·보고서 이름이 포함됐는지 감지
 _DOC_NAME_PATTERN = re.compile(
@@ -69,6 +72,14 @@ def run(state: QAState) -> QAState:
             if comparison:
                 state["meta"]["query_comparison_subjects"] = comparison
                 logger.info("Router: query_comparison_subjects=%s", comparison)
+
+        # 쿼리에서 날짜 범위 추출 — UI에서 이미 명시한 경우엔 덮어쓰지 않음
+        if not state["meta"].get("date_from") and not state["meta"].get("date_to"):
+            date_from, date_to = _temporal_parser.parse(question)
+            if date_from:
+                state["meta"]["date_from"] = date_from
+                state["meta"]["date_to"] = date_to or date_from
+                logger.info("Router: temporal date_from=%s date_to=%s", date_from, date_to)
 
     logger.info("Router complete → meta=%s", state.get("meta"))
     return state
