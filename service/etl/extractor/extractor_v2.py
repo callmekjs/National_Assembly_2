@@ -57,38 +57,40 @@ def extract_pages(path: Path) -> list[dict]:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    manifest_path = OUT_DIR / "source_manifest_v2.jsonl"
-    pages_path = OUT_DIR / "pages_v2.jsonl"
 
     pdf_files = sorted(IN_DIR.rglob("*.pdf"))
-    manifest_rows: list[dict] = []
     total_pages = 0
 
-    with pages_path.open("w", encoding="utf-8") as pages_out:
-        for path in pdf_files:
-            pages = extract_pages(path)
-            meta = _metadata_from_path(path)
-            manifest_rows.append({
-                "source_id": _source_id(path),
-                "file_path": str(path.relative_to(ROOT)),
-                "file_hash": _file_hash(path),
-                "committee": meta["committee"],
-                "meeting_date": meta["meeting_date"],
-                "page_count": len(pages),
-                "parser_version": "v2",
-                "created_at": datetime.now().isoformat(),
-            })
+    for path in pdf_files:
+        sid = _source_id(path)
+        meta = _metadata_from_path(path)
+        pages = extract_pages(path)
+
+        src_dir = OUT_DIR / sid
+        src_dir.mkdir(parents=True, exist_ok=True)
+
+        with (src_dir / "pages.jsonl").open("w", encoding="utf-8") as f:
             for page in pages:
-                pages_out.write(json.dumps(page, ensure_ascii=False) + "\n")
-            total_pages += len(pages)
+                f.write(json.dumps(page, ensure_ascii=False) + "\n")
 
-    with manifest_path.open("w", encoding="utf-8") as f:
-        for row in manifest_rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        manifest = {
+            "source_id": sid,
+            "file_path": str(path.relative_to(ROOT)),
+            "file_hash": _file_hash(path),
+            "committee": meta["committee"],
+            "meeting_date": meta["meeting_date"],
+            "page_count": len(pages),
+            "parser_version": "v2",
+            "created_at": datetime.now().isoformat(),
+        }
+        with (src_dir / "manifest.json").open("w", encoding="utf-8") as f:
+            f.write(json.dumps(manifest, ensure_ascii=False) + "\n")
 
-    print(f"[extractor_v2] sources={len(manifest_rows)} pages={total_pages}")
-    print(f"  manifest → {manifest_path}")
-    print(f"  pages   → {pages_path}")
+        total_pages += len(pages)
+
+    sources = len(pdf_files)
+    print(f"[extractor_v2] sources={sources} pages={total_pages}")
+    print(f"  → {OUT_DIR}/{{source_id}}/pages.jsonl")
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-IN_PATH = ROOT / "data" / "v2" / "extract" / "pages_v2.jsonl"
-OUT_DIR = ROOT / "data" / "v2" / "transform"
+EXTRACT_DIR = ROOT / "data" / "v2" / "extract"
+OUT_DIR = ROOT / "data" / "v2" / "transform" / "normalized"
 
 _NOISE_LINE_PATTERNS: list[re.Pattern] = [
     re.compile(r"^제\d+회[\-\s]?[가-힣]*제?\d*차?.*$"),
@@ -55,23 +55,32 @@ def clean_text(raw: str) -> str:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUT_DIR / "normalized_v2.jsonl"
-    count = 0
-    with IN_PATH.open("r", encoding="utf-8") as src, \
-         out_path.open("w", encoding="utf-8") as out:
-        for line in src:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            raw = str(row.get("raw_text", ""))
-            cleaned = clean_text(raw)
-            if not cleaned:
-                continue
-            row["clean_text"] = cleaned
-            row["section_type"] = classify_section(raw)
-            out.write(json.dumps(row, ensure_ascii=False) + "\n")
-            count += 1
-    print(f"[normalizer_v2] normalized={count} → {out_path}")
+    total = 0
+
+    for pages_path in sorted(EXTRACT_DIR.glob("*/pages.jsonl")):
+        sid = pages_path.parent.name
+        src_out = OUT_DIR / sid
+        src_out.mkdir(parents=True, exist_ok=True)
+        out_path = src_out / "normalized.jsonl"
+        count = 0
+
+        with pages_path.open("r", encoding="utf-8") as src, \
+             out_path.open("w", encoding="utf-8") as out:
+            for line in src:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                raw = str(row.get("raw_text", ""))
+                cleaned = clean_text(raw)
+                if not cleaned:
+                    continue
+                row["clean_text"] = cleaned
+                row["section_type"] = classify_section(raw)
+                out.write(json.dumps(row, ensure_ascii=False) + "\n")
+                count += 1
+        total += count
+
+    print(f"[normalizer_v2] normalized={total} → {OUT_DIR}/{{source_id}}/normalized.jsonl")
 
 
 if __name__ == "__main__":

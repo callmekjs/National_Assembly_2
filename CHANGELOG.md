@@ -6,6 +6,29 @@
 
 ---
 
+## [Day 14 패키징 · Day 15 발표 마감] 2026-06-24
+
+재현성 패키징, E2E 통합 테스트, 발표 포트폴리오 패키지 완성.
+
+### Added
+- **E2E 통합 테스트** (`tests/conftest.py`, `tests/test_e2e_pipeline.py`):
+  - `--pg-port` pytest CLI 옵션 + session 스코프 DB 픽스처
+  - DB → chunks → embeddings_e5 → Retriever.search → Generator.generate_with_citations 전 과정 5단계 검증
+  - DB 미연결 환경 자동 skip (CI 안전)
+- **Healthcheck CLI** (`scripts/healthcheck.py`):
+  - Postgres 연결·chunks·embeddings_e5·벡터차원 4단계 진단
+  - `.env` 자동 로드, CLI 인자 > 환경변수 > 기본값, Windows UTF-8 호환
+  - 단계 실패 시 이후 SKIP + exit(1)
+- **발표 포트폴리오 패키지** (`docs/presentation/day15-package.md`):
+  - 60초 서사 (3문장 구어체), 데모 질문 3개 스크립트 + 실패 대사, Mermaid 아키텍처 다이어그램, 핵심 수치 스냅샷
+
+### Changed
+- **README** (`README.md`): 서비스 구성 표 + 빠른 시작 4단계 (`healthcheck.py` 포함) 추가
+- **Day 14 마일스톤** (`docs/dev-log/milestones/day-14.md`): 원데이 검증 노트로 교체
+- **Day 15 마일스톤** (`docs/dev-log/milestones/day-15.md`): 전 항목 완료 체크
+
+---
+
 ## [인프라·엔지니어링 4-1/4-2/4-3] 2026-06-23
 
 FastAPI 레이어, 쿼리 모니터링, 핵심 모듈 단위 테스트 구현.

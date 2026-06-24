@@ -168,16 +168,23 @@ National_Assembly_2/
 │           ├── ragas_eval.py             # RAGAS 자동 평가
 │           └── unanswerable_eval.py      # OOD 거부 평가
 │
-├── tests/                          # 단위 테스트 (41/41 PASS, DB 없이 실행)
-│   ├── test_chunker.py             # chunker 13개
-│   ├── test_normalizer.py          # normalizer 16개
-│   └── test_retriever.py           # retriever 내부 메서드 12개
+├── scripts/
+│   └── healthcheck.py              # Postgres 4단계 진단 CLI (.env 자동 로드)
+│
+├── tests/                          # 단위·통합 테스트 (DB 없이 실행 가능)
+│   ├── conftest.py                 # --pg-port 옵션, DB 픽스처 (session 스코프)
+│   ├── test_chunker.py             # chunker 단위 테스트 13개
+│   ├── test_normalizer.py          # normalizer 단위 테스트 16개
+│   ├── test_retriever.py           # retriever 내부 메서드 12개
+│   └── test_e2e_pipeline.py        # E2E 통합 테스트 5개 (실제 DB 필요)
 │
 ├── docs/
 │   ├── test.md                     # 시스템 테스트 명세 (22개)
 │   ├── test_eval.md                # 시스템 테스트 결과 (22/22 PASS)
 │   ├── Data_test.md                # 데이터 파이프라인 테스트 명세 (13개)
 │   ├── Data_test_eval.md           # 데이터 테스트 결과 (13/13 PASS)
+│   ├── presentation/
+│   │   └── day15-package.md        # 발표 패키지 (서사·데모·다이어그램·수치)
 │   ├── architecture/
 │   │   └── ARCHITECTURE.md         # 설계 결정 근거
 │   ├── evaluation/

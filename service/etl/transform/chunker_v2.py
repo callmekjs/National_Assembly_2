@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-IN_PATH = ROOT / "data" / "v2" / "transform" / "turns_v2.jsonl"
+TURNS_DIR = ROOT / "data" / "v2" / "transform" / "turns"
+CHUNKS_DIR = ROOT / "data" / "v2" / "transform" / "chunks"
 OUT_DIR = ROOT / "data" / "v2" / "transform" / "final"
 
 MIN_CHARS = 300
@@ -59,45 +60,57 @@ def _merge_turns(turns: list[dict]) -> list[dict]:
     return merged
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUT_DIR / "chunks_v2.jsonl"
+def _build_record(chunk: dict, source_id: str) -> dict:
+    text = chunk.get("clean_text", "")
+    return {
+        "chunk_id": _make_chunk_id(chunk),
+        "source_id": source_id,
+        "page_no": chunk.get("page_no"),
+        "turn_index": chunk.get("turn_index"),
+        "speaker": chunk.get("speaker", ""),
+        "speaker_role": chunk.get("speaker_role", ""),
+        "section_type": chunk.get("section_type", "body"),
+        "raw_text": text,
+        "clean_text": text,
+        "embed_text": _make_embed_text(chunk),
+        "metadata": chunk.get("metadata", {}),
+    }
 
-    by_source: dict[str, list[dict]] = {}
-    with IN_PATH.open("r", encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            by_source.setdefault(row["source_id"], []).append(row)
+
+def main() -> None:
+    CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    final_path = OUT_DIR / "chunks_v2.jsonl"
 
     total = 0
     short_count = 0
-    with out_path.open("w", encoding="utf-8") as out:
-        for source_id, turns in sorted(by_source.items()):
+
+    with final_path.open("w", encoding="utf-8") as final_out:
+        for turns_path in sorted(TURNS_DIR.glob("*/turns.jsonl")):
+            sid = turns_path.parent.name
+            turns = []
+            with turns_path.open("r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        turns.append(json.loads(line))
+
             turns = [t for t in turns if len(t.get("clean_text", "")) >= SKIP_CHARS]
-            for chunk in _merge_turns(turns):
-                text = chunk.get("clean_text", "")
-                record = {
-                    "chunk_id": _make_chunk_id(chunk),
-                    "source_id": source_id,
-                    "page_no": chunk.get("page_no"),
-                    "turn_index": chunk.get("turn_index"),
-                    "speaker": chunk.get("speaker", ""),
-                    "speaker_role": chunk.get("speaker_role", ""),
-                    "section_type": chunk.get("section_type", "body"),
-                    "raw_text": text,
-                    "clean_text": text,
-                    "embed_text": _make_embed_text(chunk),
-                    "metadata": chunk.get("metadata", {}),
-                }
-                out.write(json.dumps(record, ensure_ascii=False) + "\n")
-                total += 1
-                if len(text) < 300:
-                    short_count += 1
+            records = [_build_record(c, sid) for c in _merge_turns(turns)]
+
+            src_out = CHUNKS_DIR / sid
+            src_out.mkdir(parents=True, exist_ok=True)
+            with (src_out / "chunks.jsonl").open("w", encoding="utf-8") as f:
+                for r in records:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    final_out.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    total += 1
+                    if len(r["clean_text"]) < 300:
+                        short_count += 1
 
     ratio = short_count / max(total, 1)
-    print(f"[chunker_v2] chunks={total} 300자미만={short_count}({ratio:.1%}) → {out_path}")
+    print(f"[chunker_v2] chunks={total} 300자미만={short_count}({ratio:.1%})")
+    print(f"  → {CHUNKS_DIR}/{{source_id}}/chunks.jsonl")
+    print(f"  → {final_path} (merged)")
 
 
 if __name__ == "__main__":

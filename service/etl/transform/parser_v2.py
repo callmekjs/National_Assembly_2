@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
-IN_PATH = ROOT / "data" / "v2" / "transform" / "normalized_v2.jsonl"
-OUT_DIR = ROOT / "data" / "v2" / "transform"
+NORM_DIR = ROOT / "data" / "v2" / "transform" / "normalized"
+OUT_DIR = ROOT / "data" / "v2" / "transform" / "turns"
 
 _ROLES = (
     "위원장|소위원장|수석전문위원|전문위원|위원|장관|차관|의원|대사"
@@ -68,29 +68,31 @@ def extract_turns(source_id: str, page_no: int, clean_text: str) -> list[dict]:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUT_DIR / "turns_v2.jsonl"
     total_turns = 0
-    global_idx: dict[str, int] = {}
 
-    with IN_PATH.open("r", encoding="utf-8") as src, \
-         out_path.open("w", encoding="utf-8") as out:
-        for line in src:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            if row.get("section_type") != "body":
-                continue
-            source_id = row["source_id"]
-            page_no = row["page_no"]
-            global_idx.setdefault(source_id, 0)
-            for t in extract_turns(source_id, page_no, row.get("clean_text", "")):
-                t["turn_index"] = global_idx[source_id]
-                t["metadata"] = row.get("metadata", {})
-                global_idx[source_id] += 1
-                out.write(json.dumps(t, ensure_ascii=False) + "\n")
-                total_turns += 1
+    for norm_path in sorted(NORM_DIR.glob("*/normalized.jsonl")):
+        sid = norm_path.parent.name
+        src_out = OUT_DIR / sid
+        src_out.mkdir(parents=True, exist_ok=True)
+        out_path = src_out / "turns.jsonl"
+        turn_idx = 0
 
-    print(f"[parser_v2] turns={total_turns} → {out_path}")
+        with norm_path.open("r", encoding="utf-8") as src, \
+             out_path.open("w", encoding="utf-8") as out:
+            for line in src:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row.get("section_type") != "body":
+                    continue
+                for t in extract_turns(sid, row["page_no"], row.get("clean_text", "")):
+                    t["turn_index"] = turn_idx
+                    t["metadata"] = row.get("metadata", {})
+                    turn_idx += 1
+                    out.write(json.dumps(t, ensure_ascii=False) + "\n")
+                    total_turns += 1
+
+    print(f"[parser_v2] turns={total_turns} → {OUT_DIR}/{{source_id}}/turns.jsonl")
 
 
 if __name__ == "__main__":
