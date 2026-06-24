@@ -68,3 +68,10 @@ def test_build_iter_sql_targets_embeddings_e5_v2():
     sql = _build_iter_sql(skip_existing=True, limit=None)
     assert "embeddings_e5_v2" in sql
     assert "embeddings_e5" not in sql.replace("embeddings_e5_v2", "")
+
+
+def test_parse_db_row_id_type():
+    row = (99, "cid", "text")
+    result = _parse_db_row(row)
+    assert isinstance(result["id"], int)
+    assert result["id"] == 99

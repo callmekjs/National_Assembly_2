@@ -130,6 +130,10 @@ def _flush(
     chunk_ids = [c["chunk_id"] for c in batch]
     texts = [c["embed_text"] for c in batch]
     vectors = encoder.encode_documents(texts, batch_size=len(texts))
+    if len(vectors) != len(chunk_ids):
+        raise RuntimeError(
+            f"[embed_v2] encoder returned {len(vectors)} vectors for {len(chunk_ids)} chunks"
+        )
     rows = list(zip(chunk_ids, vectors))
     with conn.cursor() as cur:
         cur.executemany(UPSERT_SQL, rows)
