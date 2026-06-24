@@ -1,15 +1,6 @@
 from __future__ import annotations
 
 import streamlit as st
-from collections import namedtuple
-from typing import Any
-
-PageInfo = namedtuple("PageInfo", ["link", "label", "icon"])
-PAGE_INFO = {
-    "P0": PageInfo(link="app.py", label="홈", icon="🏠"),
-    "P1": PageInfo(link="pages/page1.py", label="회의록 질의", icon="💬"),
-    "PDT": PageInfo(link="pages/data_tool.py", label="데이터 도구", icon="🧰"),
-}
 
 def _hide_builtin_nav():
     """Streamlit 기본 멀티페이지 네비(상단 자동 목록) 숨김 + 사이드바 정돈"""
@@ -63,14 +54,6 @@ def _inject_common_styles():
         unsafe_allow_html=True,
     )
 
-def render_page_title(page_info: Any, *, variant: str = "default") -> None:
-    """페이지 타이틀 렌더링 (기본/compact)"""
-    title_class = "app-title"
-    if variant == "compact":
-        title_class += " app-title--compact"
-    # st.markdown(f'<h1 class="{title_class}">{text}</h1>', unsafe_allow_html=True)
-    st.markdown(f'<h1 class="{title_class}">{page_info.icon}&nbsp;{page_info.label}</h1>', unsafe_allow_html=True)
-
 def render_sidebar():
     st.set_page_config(
         page_title="국회 회의록 근거 기반 질의응답",
@@ -82,13 +65,5 @@ def render_sidebar():
     _hide_builtin_nav()
 
     with st.sidebar:
-        st.subheader("국회 회의록 RAG")
-        st.caption("메인: 근거 기반 LLM 질의 · 전제: 회의록 ETL·검색")
-        st.markdown("---")
-        st.markdown("### 페이지 이동")
-        st.page_link(PAGE_INFO["P0"].link, label=PAGE_INFO["P0"].label, icon=PAGE_INFO["P0"].icon)
-        st.page_link(PAGE_INFO["P1"].link, label=PAGE_INFO["P1"].label, icon=PAGE_INFO["P1"].icon)
-        st.page_link(PAGE_INFO["PDT"].link, label=PAGE_INFO["PDT"].label, icon=PAGE_INFO["PDT"].icon)
-
-
-        
+        st.subheader("국회 회의록")
+        st.caption("질문하면 회의록 근거와 함께 답합니다.")

@@ -6,6 +6,30 @@
 
 ---
 
+## [발언자 메타 고도화 · LLM 컨텍스트 버그 수정] 2026-06-24
+
+### Added
+- **발언자 정당 룩업 테이블** (`data/speakers.json`): 국민의힘 14명 · 더불어민주당 13명 · 조국혁신당 1명 정적 매핑
+- **`_enrich_speaker_metadata()`** (`chunker_v2.py`): ETL 단계에서 청크 metadata에 `party` · `position_type` 자동 주입
+  - 장관·차관·청장 등 직함 키워드 → `정부측` 자동 분류 (speakers.json 없이도 동작)
+  - speakers.json 룩업 → `더불어민주당` / `국민의힘` / `조국혁신당`
+- **embed_text 정당 포함**: `[발언자: 이재정 위원 (더불어민주당)]` 형식으로 임베딩 시맨틱 강화 — 정당 관련 의미 검색 품질 향상
+
+### Fixed
+- **LLM 컨텍스트 무시 버그** (`generate.py:_build_numbered_context()`): `state["context"]`(context_trim 출력)가 docs 존재 시 항상 덮어써져 LLM에 도달하지 못하던 근본 버그 수정
+  - `party` / `position_type` → 발언자 레이블에 포함 (`이재정 위원 (더불어민주당)`)
+  - `prev_context` / `next_context` → 본문 앞뒤에 포함 — 이전 세션의 앞뒤 발언 보강이 비로소 LLM에 도달
+- **max_tokens 이중관리 버그**: 스트리밍 경로(`chat.py`) 512 하드코딩 → `GENERATE_MAX_TOKENS` env 변수로 통일, 기본값 512 → **1024**
+- **`_est_tokens()` 한국어 오추정** (`generate.py`): 영어 기준 `// 4` → 한국어 기준 `// 2` — 로그 prompt_est_tok 정확도 2× 향상
+
+### Changed
+- **`retrieve_pg.py`**: `state["retrieved"]` 각 doc에 `party` · `position_type` 필드 추가
+- **`context_trim.py`**: `_build_chunk_with_context()`에 발언자 헤더(정당 포함) 삽입 / citations 딕셔너리에 party · position_type 추가
+- **ETL 재실행** (13,255 청크 UPSERT 완료):
+  - 더불어민주당 3,848 / 국민의힘 3,804 / 정부 3,952 / 조국혁신당 405 / 미확인 0
+
+---
+
 ## [재현성 진단 · 개선 방향 정의] 2026-06-24
 
 ### Investigated

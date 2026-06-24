@@ -74,17 +74,37 @@ def _speaker_label(doc: dict) -> str:
     role = str(doc.get("speaker_role") or meta.get("speaker_role") or "").strip()
     if not speaker:
         speaker = _speaker_from_text(doc.get("chunk_text", "") or doc.get("content", ""))
-    if speaker and role and role not in speaker:
-        return f"{speaker} {role}"
-    return speaker or role or "발언자 미상"
+    label = f"{speaker} {role}".strip() if (speaker and role and role not in speaker) else (speaker or role or "발언자 미상")
+    party = str(doc.get("party") or meta.get("party") or "").strip()
+    if party and party not in ("정부", "미확인", ""):
+        label = f"{label} ({party})"
+    elif str(doc.get("position_type") or meta.get("position_type") or "") == "정부측":
+        label = f"{label} (정부측)"
+    return label
 
 
 def _build_chunk_with_context(doc: dict) -> str:
-    """prev_context / next_context가 있으면 발언 전후를 함께 구성."""
+    """prev_context / next_context가 있으면 발언 전후를 함께 구성.
+    발언자 헤더(정당 포함)를 앞에 붙여 LLM이 여당/야당/정부측을 파악할 수 있도록 한다.
+    """
+    speaker = (doc.get("speaker") or "").strip()
+    role = (doc.get("speaker_role") or "").strip()
+    party = (doc.get("party") or "").strip()
+    position_type = (doc.get("position_type") or "").strip()
     prev = (doc.get("prev_context") or "").strip()
     text = (doc.get("chunk_text") or "").strip()
     nxt = (doc.get("next_context") or "").strip()
+
+    # 발언자 헤더 구성 (party/position_type 포함)
     parts: list[str] = []
+    if speaker or role:
+        label = f"{speaker} {role}".strip() if (speaker and role) else (speaker or role)
+        if party and party not in ("정부", "미확인", ""):
+            label += f" ({party})"
+        elif position_type == "정부측":
+            label += " (정부측)"
+        parts.append(f"[발언자: {label}]")
+
     if prev:
         parts.append(f"[이전 발언] {prev}")
     parts.append(text)
@@ -108,6 +128,8 @@ def run(state: QAState) -> QAState:
                 "chunk_id": d.get("chunk_id", ""),
                 "speaker": _speaker_label(d),
                 "speaker_role": str(d.get("speaker_role") or meta.get("speaker_role") or "").strip(),
+                "party": str(d.get("party") or meta.get("party") or "").strip(),
+                "position_type": str(d.get("position_type") or meta.get("position_type") or "").strip(),
                 "quote": _quote_snippet(d.get("chunk_text", "") or ""),
                 "chunk_text": (d.get("chunk_text") or "").strip(),
                 "source_path": str(meta.get("source_path") or "").strip(),

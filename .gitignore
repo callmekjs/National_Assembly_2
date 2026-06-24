@@ -240,6 +240,7 @@ db.sqlite3
 #ETC
 .history
 data/*
+!data/speakers.json
 models/adapters/*
 models/base/*
 **/.cache/

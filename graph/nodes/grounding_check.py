@@ -66,18 +66,19 @@ _BULLET_BOLD_RE = re.compile(r"^(-\s*\*\*)(.+?)(\*\*)(.*)", re.DOTALL)
 
 # 비교 쿼리 한계 섹션 정리: "찾을 수 없" 또는 "비교 근거 부족" 패턴
 _COMP_MISSING_RE = re.compile(r"찾을\s*수\s*없|비교\s*근거\s*부족")
+_MAIN_HEADER_RE = re.compile(r"#{1,4}\s*(?:핵심\s*결론|메인\s*결과)")
 
 
 # ── 유틸 ─────────────────────────────────────────────────────────
 
 def _extract_conclusion_text(ans: str) -> str:
-    """핵심 결론 섹션 텍스트만 추출. 헤더와 같은 줄에 붙은 내용도 포함."""
+    """메인 결과/핵심 결론 섹션 텍스트만 추출. 헤더와 같은 줄에 붙은 내용도 포함."""
     lines = ans.splitlines()
     in_conclusion = False
     buf: list[str] = []
     for line in lines:
         s = line.strip()
-        m = re.match(r"#{1,4}\s*핵심\s*결론\s*(.*)", s)
+        m = re.match(r"#{1,4}\s*(?:핵심\s*결론|메인\s*결과)\s*(.*)", s)
         if m:
             in_conclusion = True
             inline = m.group(1).strip()
@@ -140,11 +141,32 @@ def _speaker_name_matches(stated: str, actual: str) -> bool:
     return True
 
 
+def _speaker_from_text(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"\[발언자:\s*([^\]\n]+)\]", t)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r"[○◯]\s*([가-힣A-Za-z0-9·ㆍ-]{2,20}(?:\s+[가-힣A-Za-z0-9·ㆍ-]{1,20})?)", t)
+    return m.group(1).strip() if m else ""
+
+
+def _doc_speaker_label(doc: dict) -> str:
+    meta = doc.get("metadata") or {}
+    speaker = str(doc.get("speaker") or meta.get("speaker") or "").strip()
+    role = str(doc.get("speaker_role") or meta.get("speaker_role") or "").strip()
+    if not speaker:
+        speaker = _speaker_from_text(doc.get("chunk_text", "") or doc.get("content", ""))
+    if speaker and role and role not in speaker:
+        return f"{speaker} {role}"
+    return speaker or role
+
+
 def _get_chunk_speaker(docs: list[dict], n: int) -> str:
     """[n] 청크의 실제 발언자 반환 (1-based 인덱스)."""
     if 1 <= n <= len(docs):
-        meta = docs[n - 1].get("metadata") or {}
-        return str(meta.get("speaker") or "").strip()
+        return _doc_speaker_label(docs[n - 1])
     return ""
 
 
@@ -395,7 +417,7 @@ def _check_per_subject_grounding(
     new_lines: list[str] = []
     for line in lines:
         s = line.strip()
-        if re.match(r"#{1,4}\s*핵심\s*결론", s):
+        if _MAIN_HEADER_RE.match(s):
             in_conclusion = True
             new_lines.append(line)
             continue
@@ -455,7 +477,7 @@ def _check_per_subject_grounding(
         inserted = False
         for line in lines:
             new_lines.append(line)
-            if not inserted and re.match(r"#{1,4}\s*핵심\s*결론", line.strip()):
+            if not inserted and _MAIN_HEADER_RE.match(line.strip()):
                 new_lines.append("")
                 new_lines.append(disclaimer)
                 inserted = True
@@ -575,9 +597,9 @@ def _pre_normalize(ans: str) -> str:
     """grounding 점수 계산 전: 헤더와 본문이 같은 줄에 붙어있으면 분리.
     공백 1개 이상으로 붙은 경우도 처리 (LLM이 ## 헤더 뒤 바로 본문 쓰는 경우).
     """
-    # 헤더 키워드(핵심 결론|세부 근거|확인된 범위|참고 자료) 뒤 공백 1개 이상으로 붙은 본문 분리
+    # 헤더 키워드(메인 결과|핵심 결론|세부 근거|확인된 범위|참고 자료) 뒤 공백 1개 이상으로 붙은 본문 분리
     t = re.sub(
-        r"(#{1,4}\s+(?:핵심\s*결론|세부\s*근거|확인된\s*범위|참고\s*자료|한계)[^\n]*?)\s+([가-힣\-\*])",
+        r"(#{1,4}\s+(?:메인\s*결과|핵심\s*결론|세부\s*근거|확인된\s*범위|참고\s*자료|한계)[^\n]*?)\s+([가-힣\-\*])",
         r"\1\n\2",
         ans,
     )
@@ -668,8 +690,8 @@ def _move_uncited_to_limits(ans: str) -> tuple[str, bool]:
             else:
                 # 확인된 범위로 이동
                 moved.append(f"- {stripped.lstrip('- ').strip()} *(출처 미확인)*")
-        elif section.startswith("핵심 결론") and not has_cite:
-            # 핵심 결론의 미인용 문장 → 인라인 표시
+        elif section.startswith(("핵심 결론", "메인 결과")) and not has_cite:
+            # 메인 결과/핵심 결론의 미인용 문장 → 인라인 표시
             out.append(line.rstrip() + " *(출처 미확인)*")
         else:
             out.append(line)

@@ -61,18 +61,34 @@ class ChatService:
     
     def get_session_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """특정 세션의 메시지들 조회"""
+        return self.get_session_messages_limited(session_id, limit=None)
+
+    def get_session_messages_limited(self, session_id: str, limit: int | None = None) -> List[Dict[str, Any]]:
+        """특정 세션의 메시지들 조회. limit가 있으면 최근 메시지만 반환."""
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT role, content, timestamp
-                    FROM chat_messages
-                    WHERE session_id = ?
-                    ORDER BY timestamp ASC
-                """, (session_id,))
-                
+                if limit is not None:
+                    cursor.execute("""
+                        SELECT role, content, timestamp
+                        FROM chat_messages
+                        WHERE session_id = ?
+                        ORDER BY timestamp DESC, id DESC
+                        LIMIT ?
+                    """, (session_id, int(limit)))
+                    rows = cursor.fetchall()
+                    rows.reverse()
+                else:
+                    cursor.execute("""
+                        SELECT role, content, timestamp
+                        FROM chat_messages
+                        WHERE session_id = ?
+                        ORDER BY timestamp ASC, id ASC
+                    """, (session_id,))
+                    rows = cursor.fetchall()
+
                 messages = []
-                for row in cursor.fetchall():
+                for row in rows:
                     messages.append({
                         'role': row['role'],
                         'content': row['content'],
@@ -83,6 +99,34 @@ class ChatService:
         except sqlite3.Error as e:
             logger.error(f"메시지 조회 실패: {e}")
             return []
+
+    def prune_session_messages(self, session_id: str, max_messages: int) -> int:
+        """세션별 메시지를 최근 max_messages개만 남긴다."""
+        if max_messages <= 0:
+            return 0
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id
+                    FROM chat_messages
+                    WHERE session_id = ?
+                    ORDER BY timestamp DESC, id DESC
+                """, (session_id,))
+                ids = [int(row["id"]) for row in cursor.fetchall()]
+                keep = set(ids[:max_messages])
+                delete_ids = [msg_id for msg_id in ids if msg_id not in keep]
+                if not delete_ids:
+                    return 0
+                cursor.executemany(
+                    "DELETE FROM chat_messages WHERE id = ?",
+                    [(msg_id,) for msg_id in delete_ids],
+                )
+                conn.commit()
+                return len(delete_ids)
+        except sqlite3.Error as e:
+            logger.error(f"메시지 정리 실패: {e}")
+            return 0
     
     def add_message(self, session_id: str, role: str, content: str) -> bool:
         """세션에 새 메시지 추가"""

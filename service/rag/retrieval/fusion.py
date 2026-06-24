@@ -55,8 +55,10 @@ def fusion_search(
     # BM25로 재정렬한 결과 리스트 생성
     bm25_ranked = sorted(
         vector_results,
-        key=lambda d: bm25_score(query, d.get("content", "")),
-        reverse=True,
+        key=lambda d: (
+            -bm25_score(query, d.get("content", "")),
+            str(d.get("chunk_id") or d.get("source_id") or ""),
+        ),
     )
 
     # RRF 통합

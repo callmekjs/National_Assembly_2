@@ -51,12 +51,14 @@ class PgVectorStore:
             if speaker:
                 where_parts.append("COALESCE(c.metadata->>'speaker', '') LIKE %s")
                 params.append(f"%{speaker}%")
+            if bool(filters.get("require_speaker")):
+                where_parts.append("COALESCE(c.metadata->>'speaker', '') <> ''")
 
         if where_parts:
             sql += " WHERE " + " AND ".join(where_parts)
 
         sql += """
-        ORDER BY e.embedding <=> %s::vector
+        ORDER BY e.embedding <=> %s::vector, c.chunk_id ASC
         LIMIT %s
         """
         params.extend([query_embedding, top_k])
@@ -144,7 +146,7 @@ class PgVectorStore:
         FROM embeddings_e5_v2 e
         JOIN chunks_v2 c ON c.chunk_id = e.chunk_id
         WHERE {where}
-        ORDER BY e.embedding <=> %s::vector
+        ORDER BY e.embedding <=> %s::vector, c.chunk_id ASC
         LIMIT %s
         """
         params = [query_embedding] + filter_params + [query_embedding, top_k]
@@ -180,7 +182,7 @@ class PgVectorStore:
         FROM chunks_v2 c
         WHERE {where}
           AND to_tsvector('simple', c.clean_text) @@ plainto_tsquery('simple', %s)
-        ORDER BY rank DESC
+        ORDER BY rank DESC, c.chunk_id ASC
         LIMIT %s
         """
         params = [query_text] + filter_params + [query_text, top_k]
@@ -223,4 +225,6 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     if speaker:
         parts.append("COALESCE(c.speaker, '') LIKE %s")
         params.append(f"%{speaker}%")
+    if bool(filters.get("require_speaker")):
+        parts.append("COALESCE(c.speaker, '') <> ''")
     return " AND ".join(parts), params

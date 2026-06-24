@@ -47,4 +47,10 @@ def normalize_scores(
         d["normalized_score"] = score
         result.append(d)
 
-    return sorted(result, key=lambda x: x["normalized_score"], reverse=True)
+    return sorted(
+        result,
+        key=lambda x: (
+            -float(x.get("normalized_score", 0.0) or 0.0),
+            str(x.get("chunk_id") or x.get("source_id") or ""),
+        ),
+    )

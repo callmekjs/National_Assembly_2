@@ -12,12 +12,12 @@ from service.llm.prompt_templates import build_system_prompt, build_user_prompt
 
 logger = logging.getLogger(__name__)
 
-_MAX_OUT = int(os.getenv("GENERATE_MAX_TOKENS", "512"))
+_MAX_OUT = int(os.getenv("GENERATE_MAX_TOKENS", "1024"))
 
 
 def _est_tokens(text: str) -> int:
-    """대략 토큰 수(출력 과다 방지용 요약 로그)."""
-    return max(0, len(text) // 4)
+    """대략 토큰 수(출력 과다 방지용 요약 로그). 한국어 기준 글자당 ~0.5토큰."""
+    return max(0, len(text) // 2)
 
 
 def _sanitize_context(context: str) -> str:
@@ -86,11 +86,28 @@ def _build_numbered_context(state: QAState) -> str:
             continue
         meta = doc.get("metadata") or {}
         speaker_raw = doc.get("speaker") or meta.get("speaker") or ""
-        role_raw = doc.get("speaker_role") or ""
+        role_raw = doc.get("speaker_role") or meta.get("speaker_role") or ""
+        party = doc.get("party") or meta.get("party") or ""
+        position_type = doc.get("position_type") or meta.get("position_type") or ""
+
         speaker_label = f"{speaker_raw} {role_raw}".strip() if role_raw else speaker_raw
+        if party and party not in ("정부", "미확인", ""):
+            speaker_label += f" ({party})"
+        elif position_type == "정부측":
+            speaker_label += " (정부측)"
         speaker = speaker_label or "미상"
-        date = doc.get("date") or "날짜 미상"
-        sections.append(f"[{idx}] (회의일 {date}) 발언자: {speaker}\n{body}")
+        date_str = doc.get("date") or "날짜 미상"
+
+        prev = (doc.get("prev_context") or "").strip()
+        nxt = (doc.get("next_context") or "").strip()
+        parts: list[str] = []
+        if prev:
+            parts.append(f"[이전 발언] {prev}")
+        parts.append(body)
+        if nxt:
+            parts.append(f"[다음 발언] {nxt}")
+
+        sections.append(f"[{idx}] (회의일 {date_str}) 발언자: {speaker}\n" + "\n".join(parts))
     return "\n\n".join(sections)
 
 

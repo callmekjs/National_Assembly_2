@@ -52,9 +52,13 @@ def rrf_merge(ranked_lists: list[list[dict]], k: int = _RRF_K) -> list[dict]:
             if cid not in docs:
                 docs[cid] = doc
 
-    merged = sorted(docs.values(), key=lambda d: scores.get(
-        str(d.get("chunk_id") or d.get("source_id", "")), 0.0
-    ), reverse=True)
+    def _doc_key(doc: dict) -> str:
+        return str(doc.get("chunk_id") or doc.get("source_id", ""))
+
+    merged = sorted(
+        docs.values(),
+        key=lambda d: (-scores.get(_doc_key(d), 0.0), _doc_key(d)),
+    )
 
     # rrf_score를 각 doc에 기록
     for doc in merged:

@@ -14,6 +14,17 @@ from abc import ABC, abstractmethod
 logger = logging.getLogger(__name__)
 
 
+def _stable_doc_id(doc: Dict[str, Any]) -> str:
+    return str(doc.get("chunk_id") or doc.get("source_id") or "")
+
+
+def _sort_by_score(candidates: List[Dict[str, Any]], score_key: str) -> List[Dict[str, Any]]:
+    return sorted(
+        candidates,
+        key=lambda x: (-float(x.get(score_key, 0.0) or 0.0), _stable_doc_id(x)),
+    )
+
+
 class BaseReranker(ABC):
     """리랭커 기본 클래스"""
 
@@ -83,7 +94,7 @@ class KeywordReranker(BaseReranker):
             candidate['rerank_score'] = combined_score
 
         # 리랭킹 점수로 정렬
-        reranked = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+        reranked = _sort_by_score(candidates, 'rerank_score')
 
         return reranked[:top_k] if top_k else reranked
 
@@ -129,7 +140,7 @@ class LengthReranker(BaseReranker):
             candidate['rerank_score'] = combined_score
 
         # 리랭킹 점수로 정렬
-        reranked = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+        reranked = _sort_by_score(candidates, 'rerank_score')
 
         return reranked[:top_k] if top_k else reranked
 
@@ -167,7 +178,7 @@ class PositionReranker(BaseReranker):
             candidate['rerank_score'] = combined_score
 
         # 리랭킹 점수로 정렬
-        reranked = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+        reranked = _sort_by_score(candidates, 'rerank_score')
 
         return reranked[:top_k] if top_k else reranked
 
@@ -221,7 +232,7 @@ class SemanticReranker(BaseReranker):
                 candidate['rerank_score'] = candidate.get('similarity', 0.0)
 
         # 리랭킹 점수로 정렬
-        reranked = sorted(candidates, key=lambda x: x['rerank_score'], reverse=True)
+        reranked = _sort_by_score(candidates, 'rerank_score')
 
         return reranked[:top_k] if top_k else reranked
 
@@ -295,7 +306,7 @@ class CombinedReranker(BaseReranker):
                 candidate['final_rerank_score'] = candidate.get('similarity', 0.0)
 
         # 최종 점수로 정렬
-        reranked = sorted(candidates, key=lambda x: x['final_rerank_score'], reverse=True)
+        reranked = _sort_by_score(candidates, 'final_rerank_score')
 
         return reranked[:top_k] if top_k else reranked
 
@@ -469,7 +480,7 @@ class NeuralReranker(BaseReranker):
             logger.error(f"NeuralReranker 점수 계산 실패: {e}")
             return candidates[:top_k] if top_k else candidates
 
-        reranked = sorted(candidates, key=lambda x: x.get("neural_score", 0.0), reverse=True)
+        reranked = _sort_by_score(candidates, "neural_score")
         return reranked[:top_k] if top_k else reranked
 
 

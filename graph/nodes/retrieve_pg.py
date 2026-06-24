@@ -227,6 +227,8 @@ def run(state: QAState) -> QAState:
             "prev_context": (r.get("metadata") or {}).get("prev_context", ""),
             "next_context": (r.get("metadata") or {}).get("next_context", ""),
             "token_count": (r.get("metadata") or {}).get("token_count"),
+            "party": (r.get("metadata") or {}).get("party", ""),
+            "position_type": (r.get("metadata") or {}).get("position_type", ""),
             "metadata": r.get("metadata", {}),
         }
         for r in results

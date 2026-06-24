@@ -6,6 +6,7 @@ OPENAI_API_KEY가 있으면 OpenAI Chat Completions를 우선 사용하고,
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -37,6 +38,22 @@ else:
 
 _tokenizer = None
 _model = None
+
+# ── 인메모리 응답 캐시 ──────────────────────────────────────────────
+_CACHE: dict[str, str] = {}
+
+
+def _cache_key(system: str, user: str, history: list[dict] | None = None) -> str:
+    history_str = json.dumps(history or [], ensure_ascii=False, sort_keys=True)
+    raw = f"{system}\x00{history_str}\x00{user}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def cache_clear() -> int:
+    """캐시 비우기. 반환값: 삭제된 항목 수."""
+    n = len(_CACHE)
+    _CACHE.clear()
+    return n
 
 
 def _openai_key() -> str:
@@ -197,11 +214,23 @@ def chat_stream(
     system: str, user: str, max_tokens: int = 512,
     history: list[dict] | None = None,
 ) -> Generator[str, None, None]:
-    """OpenAI SSE 스트리밍. 로컬 HF는 비스트리밍 폴백(한 번에 전체 반환)."""
+    """OpenAI SSE 스트리밍. 캐시 hit 시 즉시 반환. 로컬 HF는 비스트리밍 폴백."""
+    key = _cache_key(system, user, history)
+    if key in _CACHE:
+        print("[LLM] stream cache hit", file=sys.stderr)
+        yield _CACHE[key]
+        return
+
     if _use_openai():
         try:
             print("[LLM] stream=True backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
-            yield from _stream_openai(system, user, max_tokens, history=history)
+            accumulated: list[str] = []
+            for chunk in _stream_openai(system, user, max_tokens, history=history):
+                accumulated.append(chunk)
+                yield chunk
+            full = "".join(accumulated)
+            if full and not is_chat_failure_message(full):
+                _CACHE[key] = full
             return
         except Exception as exc:
             print(f"[LLM] OpenAI stream 실패: {exc}", file=sys.stderr)
@@ -210,7 +239,10 @@ def chat_stream(
                 return
     try:
         print("[LLM] stream=fallback backend=local_hf", file=sys.stderr)
-        yield _chat_local_hf(system, user, max_tokens, history=history)
+        result = _chat_local_hf(system, user, max_tokens, history=history)
+        if result and not is_chat_failure_message(result):
+            _CACHE[key] = result
+        yield result
     except Exception as exc:
         yield (
             "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
@@ -318,16 +350,17 @@ def chat(
     system: str, user: str, max_tokens: int = 512,
     history: list[dict] | None = None,
 ) -> str:
-    """
-    OPENAI_API_KEY + (FORCE_LOCAL_LLM 아님) → OpenAI.
-    실패 시 로컬 HF(OPENAI_ONLY=1 이면 짧은 오류 문자열만 반환).
+    """캐시 hit 시 즉시 반환. miss 시 OpenAI → 로컬 HF 순으로 시도."""
+    key = _cache_key(system, user, history)
+    if key in _CACHE:
+        print("[LLM] cache hit", file=sys.stderr)
+        return _CACHE[key]
 
-    로컬만: FORCE_LOCAL_LLM=1 또는 키 미설정.
-    """
+    result: str
     if _use_openai():
         try:
             print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
-            return _chat_openai(system, user, max_tokens, history=history)
+            result = _chat_openai(system, user, max_tokens, history=history)
         except Exception as exc:
             print(f"[LLM] OpenAI 실패: {exc}", file=sys.stderr)
             if (os.getenv("OPENAI_ONLY") or "").lower() in ("1", "true", "yes"):
@@ -335,12 +368,24 @@ def chat(
                     "OpenAI API 호출에 실패했습니다. 키·네트워크·`OPENAI_BASE_URL`을 확인하거나 "
                     "잠시 후 다시 시도해 주세요."
                 )
+            try:
+                print("[LLM] backend=local_hf (fallback)", file=sys.stderr)
+                result = _chat_local_hf(system, user, max_tokens, history=history)
+            except Exception as exc2:
+                return (
+                    "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
+                    f"({exc2}) `.env`에 `OPENAI_API_KEY`를 설정하면 OpenAI로 생성할 수 있습니다."
+                )
+    else:
+        try:
+            print("[LLM] backend=local_hf", file=sys.stderr)
+            result = _chat_local_hf(system, user, max_tokens, history=history)
+        except Exception as exc:
+            return (
+                "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
+                f"({exc}) `.env`에 `OPENAI_API_KEY`를 설정하면 OpenAI로 생성할 수 있습니다."
+            )
 
-    try:
-        print("[LLM] backend=local_hf", file=sys.stderr)
-        return _chat_local_hf(system, user, max_tokens, history=history)
-    except Exception as exc:
-        return (
-            "죄송합니다. 로컬 LLM 답변 생성에 실패했습니다. "
-            f"({exc}) `.env`에 `OPENAI_API_KEY`를 설정하면 OpenAI로 생성할 수 있습니다."
-        )
+    if result and not is_chat_failure_message(result):
+        _CACHE[key] = result
+    return result

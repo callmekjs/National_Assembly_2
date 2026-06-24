@@ -13,6 +13,67 @@ MAX_CHARS = 600
 SKIP_CHARS = 30
 CONTEXT_CHARS = 100  # prev/next context window
 
+# 정부측 자동 감지 키워드 (speaker_role에 포함되면 정부측으로 분류)
+_GOVT_ROLE_KEYWORDS = {
+    "장관", "차관", "차장", "청장", "국장", "실장", "본부장",
+    "대사", "과장", "조정관", "대변인", "비서관",
+}
+
+
+def _load_speaker_table() -> dict[str, str]:
+    """speakers.json → {이름: 정당} 역색인"""
+    path = ROOT / "data" / "speakers.json"
+    if not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as f:
+        raw = json.load(f)
+    result: dict[str, str] = {}
+    for party, names in raw.items():
+        for name in names:
+            result[name] = party
+    return result
+
+
+_SPEAKER_TABLE: dict[str, str] = _load_speaker_table()
+
+
+def _enrich_speaker_metadata(meta: dict, speaker: str, speaker_role: str) -> None:
+    """party, position_type을 meta에 in-place 추가."""
+    # 후보자 (인사청문회)
+    if speaker == "후보자":
+        meta["party"] = "정부"
+        meta["position_type"] = "후보자"
+        return
+
+    # 정부측 자동 감지
+    for kw in _GOVT_ROLE_KEYWORDS:
+        if kw in speaker_role:
+            meta["party"] = "정부"
+            meta["position_type"] = "정부측"
+            return
+
+    # 전문위원
+    if "전문위원" in speaker_role:
+        meta["party"] = ""
+        meta["position_type"] = "전문위원"
+        return
+
+    # 위원장 / 소위원장
+    if "위원장" in speaker_role:
+        meta["party"] = _SPEAKER_TABLE.get(speaker, "미확인")
+        meta["position_type"] = "위원장"
+        return
+
+    # 일반 위원 (국회의원)
+    if "위원" in speaker_role:
+        meta["party"] = _SPEAKER_TABLE.get(speaker, "미확인")
+        meta["position_type"] = "의원"
+        return
+
+    # 기타 (발언자 미상, 이름 없음 등)
+    meta["party"] = _SPEAKER_TABLE.get(speaker, "")
+    meta["position_type"] = "기타"
+
 
 def _count_tokens(text: str) -> int:
     """토큰 수 추정. tiktoken 미설치 시 글자 수 // 2로 폴백 (한국어 기준)."""
@@ -33,7 +94,23 @@ def _make_embed_text(turn: dict) -> str:
     committee = meta.get("committee", "")
     speaker = turn.get("speaker", "")
     role = turn.get("speaker_role", "")
+    party = meta.get("party", "")
+    position_type = meta.get("position_type", "")
+
     speaker_label = f"{speaker} {role}".strip() if role else speaker
+
+    # 정당 또는 소속 표시 (embed semantic search 향상)
+    if party and party not in ("정부", "미확인", ""):
+        party_label = f" ({party})"
+    elif position_type == "정부측":
+        party_label = " (정부측)"
+    elif position_type == "후보자":
+        party_label = " (정부 후보자)"
+    else:
+        party_label = ""
+
+    if speaker_label and party_label:
+        speaker_label = f"{speaker_label}{party_label}"
 
     parts: list[str] = []
     if date:
@@ -75,17 +152,24 @@ def _build_record(chunk: dict, source_id: str) -> dict:
     token_count = _count_tokens(text)
     meta = dict(chunk.get("metadata", {}))
     meta["token_count"] = token_count  # metadata JSONB에 포함해야 DB에 저장됨
+
+    speaker = chunk.get("speaker", "")
+    speaker_role = chunk.get("speaker_role", "")
+    _enrich_speaker_metadata(meta, speaker, speaker_role)
+
+    # embed_text는 party/position_type이 채워진 meta로 생성
+    enriched_chunk = {**chunk, "metadata": meta}
     return {
         "chunk_id": _make_chunk_id(chunk),
         "source_id": source_id,
         "page_no": chunk.get("page_no"),
         "turn_index": chunk.get("turn_index"),
-        "speaker": chunk.get("speaker", ""),
-        "speaker_role": chunk.get("speaker_role", ""),
+        "speaker": speaker,
+        "speaker_role": speaker_role,
         "section_type": chunk.get("section_type", "body"),
         "raw_text": text,
         "clean_text": text,
-        "embed_text": _make_embed_text(chunk),
+        "embed_text": _make_embed_text(enriched_chunk),
         "metadata": meta,
         "token_count": token_count,
     }

@@ -70,7 +70,7 @@ def ensemble_rerank(
             if k not in id_to_doc:
                 id_to_doc[k] = doc
 
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
     result = []
     for k, score in ranked:
         d = dict(id_to_doc[k])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from pathlib import Path
 
@@ -15,7 +16,7 @@ import pandas as pd
 import streamlit as st
 from datetime import date, datetime
 from service.chat_service import ChatService
-from service.llm.llm_client import llm_env_probe
+from service.llm.llm_client import llm_env_probe, cache_clear as llm_cache_clear, _CACHE as _llm_cache
 from graph.app_graph import build_app
 
 # 본문과 참고 자료 UI 분리용 마커(모델 출력에 포함되지 않음)
@@ -113,16 +114,29 @@ def change_chat_theme() -> None:
 
 # 추천 질문 (난이도 분기 없음 — 단일 고품질 답변 모드)
 SUGGESTED_QUESTIONS = [
-    "외교통일위원회 최근 회의의 핵심 쟁점과 정책 함의를 정리해줘.",
-    "특정 회의록에서 누가 어떤 발언을 했는지 근거와 함께 알려줘.",
-    "같은 안건이 여러 회의에서 어떻게 이어졌는지 비교해줘.",
-    "쟁점별로 여야·정부 발언 경향을 회의록 근거로 정리해줘.",
-    "특정 기간 회의록에서 외교 현안의 논점 변화를 추적해줘.",
-    "주요 발언자별 주장 패턴을 근거와 함께 비교해줘.",
+    "최근 외교통일위원회에서 많이 나온 쟁점을 쉽게 정리해줘.",
+    "통일부 장관이 어떤 입장을 말했는지 근거와 함께 알려줘.",
+    "한미동맹 관련 발언을 회의록 근거로 정리해줘.",
+    "여야가 대북정책을 어떻게 다르게 말했는지 비교해줘.",
+    "최근 1년 동안 북핵 관련 논의가 어떻게 바뀌었는지 알려줘.",
+    "특정 의원 이름을 넣으면 그 사람의 발언만 찾아줘.",
 ]
+
+COMMITTEE_OPTIONS = [
+    "외교통일위원회",
+    "국방위원회",
+    "기획재정위원회",
+    "법제사법위원회",
+    "행정안전위원회",
+    "전체 위원회",
+    "직접 입력",
+]
+
+DATE_MODE_OPTIONS = ["전체 기간", "최근 1년", "기간 직접 선택"]
 
 
 MAX_HISTORY_TURNS = 3  # LLM에 전달할 이전 Q&A 턴 수
+MAX_SESSION_MESSAGES = 12  # 화면/DB에 남길 최근 메시지 수
 
 # 채팅 서비스 초기화
 chat_service = ChatService()
@@ -145,7 +159,7 @@ def render_chat_panel() -> None:
     if len(current_history) <= 1:
         _render_suggested_questions()
 
-    st.caption("답변이 출력되면 맨 아래 **참고 자료** 블록에서 출처 번호 `[n]`과 인용 형식을 확인할 수 있습니다.")
+    st.caption("답변 아래 참고자료에서 실제 회의록 근거를 확인할 수 있습니다.")
 
     # 채팅 메시지 표시
     chat_container = st.container()
@@ -190,7 +204,7 @@ def _render_suggested_questions() -> None:
     for i, question in enumerate(questions):
         col = cols[i % 2]
         with col:
-            if st.button(question, key=f"suggested_q_{i}", use_container_width=True):
+            if st.button(question, key=f"suggested_q_{i}", width="stretch"):
                 _handle_user_input(question)
     st.markdown('</div>', unsafe_allow_html=True)
     
@@ -226,23 +240,71 @@ def _init_state() -> None:
     for key, val in defaults:
         if key not in st.session_state:
             st.session_state[key] = val
-    if "qa_committee" not in st.session_state:
-        st.session_state.qa_committee = "외교통일위원회"
-    if "qa_date_from" not in st.session_state:
-        st.session_state.qa_date_from = ""
-    if "qa_date_to" not in st.session_state:
-        st.session_state.qa_date_to = ""
+    st.session_state.qa_top_k = min(max(int(st.session_state.get("qa_top_k", 8)), 3), 15)
+    if "qa_committee_choice" not in st.session_state:
+        current_committee = str(st.session_state.get("qa_committee", "외교통일위원회") or "").strip()
+        if not current_committee:
+            st.session_state.qa_committee_choice = "전체 위원회"
+            st.session_state.qa_direct_committee = ""
+        elif current_committee in COMMITTEE_OPTIONS:
+            st.session_state.qa_committee_choice = current_committee
+            st.session_state.qa_direct_committee = ""
+        else:
+            st.session_state.qa_committee_choice = "직접 입력"
+            st.session_state.qa_direct_committee = current_committee
+    if "qa_date_mode" not in st.session_state:
+        has_old_range = bool(st.session_state.get("qa_date_from") or st.session_state.get("qa_date_to"))
+        st.session_state.qa_date_mode = "기간 직접 선택" if has_old_range else "전체 기간"
+    if "qa_date_from_picker" not in st.session_state:
+        st.session_state.qa_date_from_picker = date(2025, 1, 1)
+    if "qa_date_to_picker" not in st.session_state:
+        st.session_state.qa_date_to_picker = date.today()
     if not st.session_state.current_session_id or st.session_state.current_session_id not in st.session_state.chat_sessions:
         _create_new_session()
 
 
+def _date_value_to_iso(value) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value or "").strip()
+
+
+def _selected_committee() -> str:
+    choice = str(st.session_state.get("qa_committee_choice", "외교통일위원회") or "").strip()
+    if choice == "전체 위원회":
+        return ""
+    if choice == "직접 입력":
+        return str(st.session_state.get("qa_direct_committee", "") or "").strip()
+    return choice
+
+
+def _selected_date_range() -> tuple[str, str]:
+    mode = str(st.session_state.get("qa_date_mode", "전체 기간") or "").strip()
+    if mode == "최근 1년":
+        end = date.today()
+        try:
+            start = end.replace(year=end.year - 1)
+        except ValueError:
+            start = end.replace(year=end.year - 1, day=28)
+        return start.isoformat(), end.isoformat()
+    if mode == "기간 직접 선택":
+        return (
+            _date_value_to_iso(st.session_state.get("qa_date_from_picker")),
+            _date_value_to_iso(st.session_state.get("qa_date_to_picker")),
+        )
+    return "", ""
+
+
 def _build_search_meta_from_session() -> dict:
+    date_from, date_to = _selected_date_range()
     return {
         "top_k": int(st.session_state.get("qa_top_k", 8)),
         "alpha": float(st.session_state.get("qa_alpha", 0.75)),
-        "committee": str(st.session_state.get("qa_committee", "") or "").strip(),
-        "date_from": str(st.session_state.get("qa_date_from", "") or "").strip(),
-        "date_to": str(st.session_state.get("qa_date_to", "") or "").strip(),
+        "committee": _selected_committee(),
+        "date_from": date_from,
+        "date_to": date_to,
         "use_reranker": bool(st.session_state.get("qa_use_reranker", False)),
         "balance_speakers": bool(st.session_state.get("qa_balance_speakers", False)),
         "candidate_multiplier": int(st.session_state.get("qa_candidate_multiplier", 50)),
@@ -289,142 +351,152 @@ def _format_user_error(exc: BaseException) -> tuple[str, str]:
 
 
 def _render_sidebar() -> None:
-    """대화 및 검색 설정 사이드바"""
+    """대화 및 검색 설정 사이드바."""
     with st.sidebar:
-        with st.expander("검색·답변 설정", expanded=True):
-            st.slider(
-                "검색 문서 개수 (top-k)",
-                min_value=3,
-                max_value=20,
-                key="qa_top_k",
-                help="한 번에 가져올 유사 회의록 청크 수입니다.",
+        st.markdown("### 검색 범위")
+        st.selectbox(
+            "어느 위원회 회의록에서 찾을까요?",
+            COMMITTEE_OPTIONS,
+            key="qa_committee_choice",
+            help="잘 모르겠으면 '전체 위원회'를 선택하세요.",
+        )
+        if st.session_state.get("qa_committee_choice") == "직접 입력":
+            st.text_input(
+                "위원회 이름",
+                key="qa_direct_committee",
+                placeholder="예: 외교통일위원회",
             )
+
+        st.radio(
+            "회의 날짜",
+            DATE_MODE_OPTIONS,
+            key="qa_date_mode",
+            help="날짜를 모르면 전체 기간으로 두면 됩니다.",
+        )
+        if st.session_state.get("qa_date_mode") == "기간 직접 선택":
+            c1, c2 = st.columns(2)
+            with c1:
+                st.date_input("시작일", key="qa_date_from_picker")
+            with c2:
+                st.date_input("종료일", key="qa_date_to_picker")
+
+        st.slider(
+            "참고할 회의록 수",
+            min_value=3,
+            max_value=15,
+            key="qa_top_k",
+            help="값을 늘리면 더 많은 근거를 살피지만 답변이 조금 느려질 수 있습니다.",
+        )
+        st.checkbox(
+            "관련 발언을 정밀하게 고르기",
+            key="qa_use_neural_reranker",
+            help="질문과 가장 맞는 발언을 한 번 더 골라냅니다.",
+        )
+        st.checkbox(
+            "여러 발언자를 고르게 보기",
+            key="qa_balance_speakers",
+            help="한 사람 발언만 반복될 때 켜면 좋습니다.",
+        )
+
+        with st.expander("세부 설정", expanded=False):
+            st.caption("기본값으로 두면 됩니다.")
             st.slider(
-                "벡터·키워드 가중치",
+                "의미 중심 검색 비율",
                 min_value=0.0,
                 max_value=1.0,
                 step=0.05,
                 key="qa_alpha",
-                help="1에 가까울수록 벡터 유사도 비중이 큽니다.",
-            )
-            st.text_input(
-                "위원회 필터 (정확히 일치)",
-                key="qa_committee",
-                placeholder="예: 외교통일위원회",
-                help="비우면 위원회 필터 없이 검색합니다.",
-            )
-            c1, c2 = st.columns(2)
-            with c1:
-                st.text_input("회의일 시작", key="qa_date_from", placeholder="YYYY-MM-DD")
-            with c2:
-                st.text_input("회의일 종료", key="qa_date_to", placeholder="YYYY-MM-DD")
-            st.checkbox(
-                "재순위화(rerank) 사용",
-                key="qa_use_reranker",
-                help="켜면 일부 회의청크가 순위에서 밀릴 수 있습니다. 회귀 평가·특정 날 일정 회의 검색에는 끔을 권장합니다.",
+                help="높을수록 표현이 달라도 뜻이 비슷한 발언을 더 찾습니다.",
             )
             st.checkbox(
-                "발언자 균형",
-                key="qa_balance_speakers",
-                help="발언자를 골고루 섞으며, 순위 재배열로 관련 청크가 밀릴 수 있습니다.",
+                "단어 검색도 함께 사용",
+                key="qa_use_fusion",
+                help="질문에 들어간 단어가 실제 회의록에 나오는지도 함께 봅니다.",
             )
             st.number_input(
-                "초기 후보 배수",
+                "먼저 살펴볼 후보 넓이",
                 min_value=1,
                 max_value=80,
                 key="qa_candidate_multiplier",
-                help="벡터 검색 초기 후보를 top-k×배수만큼 넓힌 뒤 하이브리드로 줄입니다. 긴 회의·후반 청크는 값이 너무 작으면 누락됩니다.",
-            )
-
-        with st.sidebar.expander("고급 검색 전략", expanded=False):
-            st.caption("각 전략은 독립적으로 켜고 끌 수 있어요. LLM 호출이 있는 항목은 응답 시간이 늘어납니다.")
-            st.checkbox(
-                "Multi-query Retrieval",
-                key="qa_use_multi_query",
-                help="질문을 3개로 변형해 각각 검색 후 RRF 통합 (LLM 호출)",
+                help="값을 늘리면 놓치는 자료가 줄 수 있지만 검색이 느려질 수 있습니다.",
             )
             st.checkbox(
-                "HyDE (가상 답변 임베딩)",
-                key="qa_use_hyde",
-                help="LLM이 가상 답변 생성 → 그 임베딩으로 검색 (LLM 호출)",
-            )
-            st.checkbox(
-                "Step-back Prompting",
-                key="qa_use_step_back",
-                help="구체 질문 → 추상 질문으로 변환 후 검색, 결과 RRF 통합 (LLM 호출)",
-            )
-            st.checkbox(
-                "Fusion Retrieval (BM25+벡터 RRF)",
-                key="qa_use_fusion",
-                help="벡터 검색 + BM25 재정렬 결과를 RRF로 통합",
-            )
-            st.checkbox(
-                "Parent Document 확장",
+                "앞뒤 문맥도 함께 보기",
                 key="qa_use_parent_doc",
-                help="검색된 청크 앞뒤 1개 청크까지 포함해 더 넓은 문맥 전달",
+                help="검색된 문장 주변 발언까지 함께 참고합니다.",
             )
             st.checkbox(
-                "Contextual Compression",
-                key="qa_use_compression",
-                help="검색 청크에서 질문 무관 문장 제거 (LLM 호출, 토큰 절감)",
-            )
-            st.divider()
-            st.checkbox(
-                "Neural Reranker (Cross-Encoder)",
-                key="qa_use_neural_reranker",
-                help="BAAI/bge-reranker-v2-m3 모델로 질문-청크 쌍 정밀 재정렬 (첫 실행 시 모델 다운로드 ~570MB, 이후 빠름)",
-            )
-            st.checkbox(
-                "LLM Reranker",
-                key="qa_use_llm_reranker",
-                help="GPT-4o-mini가 후보 10개를 보고 관련도 순서로 재정렬 (LLM 호출, 모델 불필요)",
-            )
-            st.checkbox(
-                "MMR (다양성 재정렬)",
+                "같은 내용 반복 줄이기",
                 key="qa_use_mmr",
-                help="관련도 유지하면서 중복 청크 제거 — 같은 발언자·주제 반복을 줄임 (λ=0.7)",
-            )
-            st.checkbox(
-                "Score Normalization",
-                key="qa_use_score_norm",
-                help="벡터·어휘·키워드 점수를 min-max 정규화 후 앙상블 — 점수 편향 완화",
-            )
-            st.checkbox(
-                "Ensemble Reranker (Neural+LLM RRF)",
-                key="qa_use_ensemble_reranker",
-                help="Neural + LLM 두 재정렬기를 독립 실행 후 RRF 합산 — 단독보다 안정적 (LLM 호출 + 모델 로드)",
+                help="비슷한 회의록 조각이 반복될 때 켜면 좋습니다.",
             )
             st.divider()
             st.checkbox(
-                "recall@3 지표 출력 (서버 로그)",
+                "질문을 여러 표현으로 다시 찾아보기",
+                key="qa_use_multi_query",
+                help="질문을 다르게 표현해 한 번 더 검색합니다.",
+            )
+            st.checkbox(
+                "답변 초안으로 한 번 더 찾아보기",
+                key="qa_use_hyde",
+                help="예상 답변에 가까운 회의록 표현을 찾습니다.",
+            )
+            st.checkbox(
+                "넓은 질문으로 바꿔 한 번 더 찾아보기",
+                key="qa_use_step_back",
+                help="질문이 너무 구체적일 때 관련 배경 발언을 찾습니다.",
+            )
+            st.checkbox(
+                "AI가 후보 순서를 다시 고르기",
+                key="qa_use_llm_reranker",
+                help="답변 생성 모델이 후보 자료를 다시 정렬합니다.",
+            )
+            st.checkbox(
+                "검색 점수 보정",
+                key="qa_use_score_norm",
+                help="검색 점수 종류가 서로 치우치지 않도록 맞춥니다.",
+            )
+            st.checkbox(
+                "두 방식으로 한 번 더 검토",
+                key="qa_use_ensemble_reranker",
+                help="정밀 검색과 AI 재정렬을 함께 사용합니다.",
+            )
+            st.checkbox(
+                "검색 진단 로그 남기기",
                 key="qa_eval_recall",
-                help="검색마다 keyword_hit_rate / diversity / avg_similarity를 서버 콘솔에 출력",
+                help="서버 로그에 검색 품질 점검 값을 남깁니다.",
             )
 
-        st.markdown("## 💬 대화창 관리")
-        
-        # 기존 대화 목록
+        st.divider()
+        st.markdown("### 대화")
+        if st.button("새 대화 시작", width="stretch"):
+            _create_new_session()
+            st.rerun()
+
+        cache_count = len(_llm_cache)
+        if cache_count:
+            if st.button(f"LLM 캐시 비우기 ({cache_count}건)", width="stretch"):
+                llm_cache_clear()
+                st.rerun()
+
         if st.session_state.chat_sessions:
             for session_id, session in st.session_state.chat_sessions.items():
-                col1, col2 = st.columns([3, 1])
+                is_current = session_id == st.session_state.current_session_id
+                title = session["title"][:22] + ("..." if len(session["title"]) > 22 else "")
+                col1, col2 = st.columns([4, 1])
                 with col1:
                     if st.button(
-                        f"{'🔊' if session_id == st.session_state.current_session_id else ' '} {session['title'][:20]}...",
+                        f"{'현재 · ' if is_current else ''}{title}",
                         key=f"session_{session_id}",
-                        width='stretch'
+                        width="stretch",
                     ):
                         st.session_state.current_session_id = session_id
                         st.rerun()
                 with col2:
-                    if st.button("🗑️", key=f"delete_{session_id}", help="대화 삭제"):
+                    if st.button("삭제", key=f"delete_{session_id}", help="대화 삭제"):
                         _delete_session(session_id)
                         st.rerun()
 
-        # 새 대화 버튼
-        if st.button("➕ 새 대화", width='stretch'):
-            _create_new_session()
-            st.rerun()
-        st.markdown("---")
         st.caption("© 2025 SKN18-3rd-5Team")
 
 
@@ -436,7 +508,7 @@ def _create_new_session() -> None:
         chat_service.add_message(
             session_id,
             "assistant",
-                "안녕하세요! 왼쪽에서 검색 범위(위원회·날짜 등)를 조정한 뒤, 아래에 질문을 입력해 주세요. 답변 맨 아래에 참고 자료가 붙습니다."
+                "안녕하세요. 궁금한 국회 회의록 내용을 질문해 주세요. 필요하면 왼쪽에서 위원회나 날짜만 좁히면 됩니다."
         )
         
         # 세션 상태에 추가
@@ -446,12 +518,18 @@ def _create_new_session() -> None:
             "messages": [
                 {
                     "role": "assistant",
-                    "content": "안녕하세요! 왼쪽에서 검색 범위(위원회·날짜 등)를 조정한 뒤, 아래에 질문을 입력해 주세요. 답변 맨 아래에 참고 자료가 붙습니다.",
+                    "content": "안녕하세요. 궁금한 국회 회의록 내용을 질문해 주세요. 필요하면 왼쪽에서 위원회나 날짜만 좁히면 됩니다.",
                     "timestamp": datetime.now().isoformat()
                 }
             ]
         }
         st.session_state.current_session_id = session_id
+
+
+def _trim_session_messages(messages: list[dict]) -> list[dict]:
+    if len(messages) <= MAX_SESSION_MESSAGES:
+        return messages
+    return messages[-MAX_SESSION_MESSAGES:]
 
 
 def _delete_session(session_id: str) -> None:
@@ -603,7 +681,7 @@ def _handle_user_input(user_input: str) -> None:
                 system_prompt, user_prompt = build_prompts_from_state(lg_state)
                 with st.chat_message("assistant", avatar="🤖"):
                     streamed_text = st.write_stream(
-                        chat_stream(system_prompt, user_prompt, max_tokens=512, history=history)
+                        chat_stream(system_prompt, user_prompt, max_tokens=int(os.getenv("GENERATE_MAX_TOKENS", "1024")), history=history)
                     )
 
                 # 기준 2: [n] 범위 검증
@@ -634,6 +712,8 @@ def _handle_user_input(user_input: str) -> None:
 
                 # 볼드 레이블 없는 세부 근거 섹션 제거
                 clean_text, _ = _remove_unlabeled_detail_section(clean_text)
+
+                clean_text = _prepare_answer_body(clean_text)
 
                 # 기준 4: 미인용 문장 → ## 확인된 범위로 이동
                 # _pre_normalize: 헤더+본문 같은 줄 → 분리 후 점수 계산
@@ -699,6 +779,8 @@ def _append_message(role: str, content: str) -> None:
         "content": content,
         "timestamp": timestamp
     })
+    current_session["messages"] = _trim_session_messages(current_session["messages"])
+    chat_service.prune_session_messages(session_id, MAX_SESSION_MESSAGES)
 
 
 def _load_saved_sessions() -> None:
@@ -707,7 +789,7 @@ def _load_saved_sessions() -> None:
         sessions = chat_service.get_all_sessions()
         for session in sessions:
             session_id = session['id']
-            messages = chat_service.get_session_messages(session_id)
+            messages = chat_service.get_session_messages_limited(session_id, MAX_SESSION_MESSAGES)
             st.session_state.chat_sessions[session_id] = {
                 "title": session['title'],
                 "created_at": session['created_at'],
@@ -772,7 +854,7 @@ def _trust_grade(item: dict, ref_d: date) -> str:
     △보통: 둘 중 하나만 확인
     ▽낮음: 모두 미상
     """
-    speaker = (item.get("speaker") or "").strip()
+    speaker = _citation_speaker_label(item)
     date_str = item.get("date") or item.get("meeting_date") or ""
     parsed = _parse_meeting_iso(date_str)
 
@@ -786,6 +868,28 @@ def _trust_grade(item: dict, ref_d: date) -> str:
     return "▽ 낮음"
 
 
+def _speaker_from_text(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"\[발언자:\s*([^\]\n]+)\]", t)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r"[○◯]\s*([가-힣A-Za-z0-9·ㆍ-]{2,20}(?:\s+[가-힣A-Za-z0-9·ㆍ-]{1,20})?)", t)
+    return m.group(1).strip() if m else ""
+
+
+def _citation_speaker_label(item: dict) -> str:
+    speaker = (item.get("speaker") or "").strip()
+    role = (item.get("speaker_role") or "").strip()
+    if speaker and speaker != "발언자 미상":
+        return f"{speaker} {role}".strip() if role and role not in speaker else speaker
+    recovered = _speaker_from_text(item.get("chunk_text", "") or item.get("quote", ""))
+    if recovered:
+        return f"{recovered} {role}".strip() if role and role not in recovered else recovered
+    return role or "발언자 미상"
+
+
 def _render_references_table(citations: list[dict], used_indices: set[int] | None = None, msg_key: str = "") -> None:
     """참고 자료를 표로 정렬해 표시 (본문 [n] ↔ 표 번호).
     used_indices: 본문에서 실제 사용된 [n] 집합 (1-based). None이면 전체 표시.
@@ -795,7 +899,7 @@ def _render_references_table(citations: list[dict], used_indices: set[int] | Non
     for idx, item in enumerate(citations, start=1):
         if used_indices is not None and idx not in used_indices:
             continue
-        speaker = (item.get("speaker") or "").strip() or "발언자 미상"
+        speaker = _citation_speaker_label(item)
         date_disp = item.get("date") or item.get("meeting_date") or "—"
         quote = (item.get("quote") or "").strip()
         summary = _summary_for_display(quote, item)
@@ -838,7 +942,7 @@ def _render_references_table(citations: list[dict], used_indices: set[int] | Non
             "링크": link_col_cfg,
         },
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
 
     # 검색 청크 보기
@@ -907,7 +1011,7 @@ def _render_references_table(citations: list[dict], used_indices: set[int] | Non
                                         f"📄 **{pdf_path.name}** · {page_num}쪽"
                                         " (발언 위치 자동 탐색 실패 — 전체 파일은 📄 PDF 버튼)"
                                     )
-                                st.image(img_bytes, use_container_width=True)
+                                st.image(img_bytes, width="stretch")
                             else:
                                 st.caption("PyMuPDF로 페이지를 렌더링할 수 없습니다.")
                 st.divider()
@@ -915,6 +1019,7 @@ def _render_references_table(citations: list[dict], used_indices: set[int] | Non
 
 def _append_citations_block(answer: str, state: dict) -> str:
     citations = state.get("citations", [])
+    answer = _prepare_answer_body(answer)
     if not citations:
         return answer
     payload = json.dumps(citations, ensure_ascii=False)
@@ -929,6 +1034,55 @@ def _append_citations_block(answer: str, state: dict) -> str:
     )
 
 
+def _prepare_answer_body(text: str) -> str:
+    t = _strip_model_reference_section(text)
+    t = _strip_limit_section(t)
+    return _normalize_display_section_titles(t)
+
+
+def _strip_model_reference_section(text: str) -> str:
+    """LLM이 생성한 참고자료 섹션은 앱의 구조화된 출처 UI와 중복되므로 제거한다."""
+    t = (text or "").strip()
+    if not t:
+        return t
+
+    patterns = (
+        r"(?im)^\s*#{1,6}\s*(?:참고\s*자료|출처|인용\s*자료)\b.*$",
+        r"(?im)^\s*(?:참고\s*자료|출처|인용\s*자료)\s*\|.*$",
+    )
+    starts = [m.start() for pattern in patterns for m in re.finditer(pattern, t)]
+    if not starts:
+        return t
+    return t[: min(starts)].rstrip()
+
+
+def _strip_limit_section(text: str) -> str:
+    """본문은 메인 결과/세부 근거만 노출하고, 근거 상세는 참고자료 UI에 맡긴다."""
+    t = (text or "").strip()
+    if not t:
+        return t
+
+    out: list[str] = []
+    skipping = False
+    for line in t.splitlines():
+        s = line.strip()
+        if re.match(r"^#{1,6}\s*(?:확인된\s*범위|한계)\b", s):
+            skipping = True
+            continue
+        if skipping and re.match(r"^#{1,6}\s+", s):
+            skipping = False
+        if not skipping:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def _normalize_display_section_titles(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return t
+    return re.sub(r"(?im)^(\s*#{1,6}\s*)핵심\s*결론\b", r"\1메인 결과", t)
+
+
 def _normalize_llm_markdown(text: str) -> str:
     """모델이 한 줄에 이어붙인 `##`, 불릿을 줄바꿈으로 분리해 Streamlit 마크다운이 인식하게 한다."""
     t = (text or "").replace("\r\n", "\n").strip()
@@ -939,6 +1093,7 @@ def _normalize_llm_markdown(text: str) -> str:
     t = re.sub(r"(\])\s*(##\s)", r"\1\n\n\2", t)
     # "## 세부 근거 - 첫불릿" 한 줄인 경우
     t = re.sub(r"(##\s*세부\s*근거)\s*-\s+", r"\1\n\n- ", t, flags=re.IGNORECASE)
+    t = re.sub(r"(##\s*메인\s*결과)\s+([^\n#])", r"\1\n\n\2", t)
     # "## 확인된 범위 본문" 첫 글자 앞에 빈 줄 (구형 한계 헤더도 처리)
     t = re.sub(r"(##\s*확인된\s*범위)\s+([^\n#])", r"\1\n\n\2", t)
     t = re.sub(r"(##\s*한계)\s+([^\n#])", r"\1\n\n\2", t)
@@ -990,7 +1145,7 @@ def _merge_adjacent_chunks(
         return []
     groups: list[dict] = []
     for idx, item in filtered:
-        speaker = (item.get("speaker") or "미상").strip()
+        speaker = _citation_speaker_label(item)
         date_str = (item.get("date") or item.get("meeting_date") or "—").strip()
         chunk = (item.get("chunk_text") or "").strip()
         if (
@@ -1140,34 +1295,28 @@ def _extract_used_indices(text: str) -> set[int]:
 
 
 def _renumber_citations(text: str, state: dict) -> str:
-    """본문 [n]을 1부터 순서대로 재번호 매기고 state["citations"]도 같이 필터링.
-    예: 본문이 [2][3][5]만 사용하면 → [1][2][3]으로 바꾸고 citations도 그 3개만 유지.
+    """본문 [n] 번호를 검색 결과 원래 순서와 맞춘 채 유지한다.
+
+    참고자료를 본문에 쓰인 번호만으로 잘라내면, LLM이 이번 답변에서 어떤 번호를
+    선택했는지에 따라 참고자료 표 자체가 매번 바뀐다. out-of-range 번호만 제거하고
+    citations 목록은 고정 top-k 순서 그대로 둔다.
     """
-    used = _extract_used_indices(text)
-    if not used:
-        state["citations"] = []  # 인용 없으면 참고자료 테이블 자체를 숨김
+    max_ref = len(state.get("citations") or [])
+    if max_ref <= 0:
         return text
-    sorted_used = sorted(used)
-    remap = {old: new for new, old in enumerate(sorted_used, start=1)}
-    new_text = re.sub(
-        r"\[(\d+)\]",
-        lambda m: f"[{remap.get(int(m.group(1)), int(m.group(1)))}]",
-        text,
-    )
-    original = state.get("citations") or []
-    state["citations"] = [
-        original[i - 1]
-        for i in sorted_used
-        if 1 <= i <= len(original)
-    ]
-    return new_text
+
+    def _keep_valid(match: re.Match[str]) -> str:
+        ref_no = int(match.group(1))
+        return match.group(0) if 1 <= ref_no <= max_ref else ""
+
+    return re.sub(r"\[(\d+)\]", _keep_valid, text)
 
 
 def _render_assistant_markdown(content: str, msg_key: str = "") -> None:
     """본문은 섹션 단위로 정리해 표시, 참고 자료는 펼침 영역."""
     if RAG_REF_MARKER in content:
         main, _, refs = content.partition(RAG_REF_MARKER)
-        main = main.strip()
+        main = _prepare_answer_body(main.strip())
         refs = refs.strip()
         if main:
             _render_markdown_sections(main)
@@ -1176,19 +1325,19 @@ def _render_assistant_markdown(content: str, msg_key: str = "") -> None:
             total = len(parsed) if parsed else 0
             used = _extract_used_indices(main) if parsed else set()
             used_count = len([i for i in used if 1 <= i <= total])
-            with st.expander("📚 참고 자료 — 회의록 근거 출처", expanded=True):
+            with st.expander("📚 참고자료", expanded=True):
                 if parsed is not None:
-                    if total > used_count > 0:
+                    if total:
                         st.info(
-                            f"검색된 청크 **{total}개** 검토 → 본문에서 직접 인용한 **{used_count}개** 출처만 표시합니다.  \n"
-                            f"나머지 {total - used_count}개는 답변 맥락 파악에 활용했으나 직접 인용되지 않았습니다.",
+                            f"검색된 청크 **{total}개**를 고정 순서로 표시합니다.  \n"
+                            f"본문에서 직접 인용한 출처는 **{used_count}개**입니다.",
                             icon="ℹ️",
                         )
-                    _render_references_table(parsed, used_indices=used if used else None, msg_key=msg_key)
+                    _render_references_table(parsed, used_indices=None, msg_key=msg_key)
                 else:
                     _render_markdown_sections(refs)
     else:
-        _render_markdown_sections(content)
+        _render_markdown_sections(_prepare_answer_body(content))
 
 
 def _format_langgraph_response(state: dict) -> str:

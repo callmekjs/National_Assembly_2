@@ -64,6 +64,7 @@ def _search_with_text(retriever, original_query: str, embed_text: str, top_k: in
         "committee": committee or "",
         "date_from": df or "",
         "date_to": dt or "",
+        "require_speaker": bool(kwargs.get("require_speaker", False)),
     }
 
     candidate_multiplier = int(kwargs.get("candidate_multiplier", 50))
@@ -93,10 +94,18 @@ def _search_with_text(retriever, original_query: str, embed_text: str, top_k: in
             "lexical_score": lexical_score,
             "keyword_boost": keyword_boost,
             "hybrid_score": hybrid_score,
+            "speaker": row.metadata.get("speaker", ""),
+            "speaker_role": row.metadata.get("speaker_role", ""),
             "metadata": row.metadata if include_metadata else {},
         })
 
-    out = sorted(out, key=lambda x: x.get("hybrid_score", 0.0), reverse=True)
+    out = sorted(
+        out,
+        key=lambda x: (
+            -float(x.get("hybrid_score", 0.0) or 0.0),
+            str(x.get("chunk_id") or x.get("source_id") or ""),
+        ),
+    )
     out = retriever._dedupe_by_chunk_id(out)
 
     use_reranker = kwargs.get("use_reranker", False)
