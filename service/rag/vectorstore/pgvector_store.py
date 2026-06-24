@@ -139,7 +139,8 @@ class PgVectorStore:
         where, filter_params = _build_v2_filter_where(filters)
         sql = f"""
         SELECT c.chunk_id, c.source_id, c.clean_text,
-               1 - (e.embedding <=> %s::vector) AS sim, c.metadata
+               1 - (e.embedding <=> %s::vector) AS sim, c.metadata,
+               c.speaker, c.speaker_role
         FROM embeddings_e5_v2 e
         JOIN chunks_v2 c ON c.chunk_id = e.chunk_id
         WHERE {where}
@@ -157,6 +158,8 @@ class PgVectorStore:
                 content=row[2] or "",
                 similarity=float(row[3] or 0.0),
                 metadata=row[4] or {},
+                speaker=row[5] or "",
+                speaker_role=row[6] or "",
             )
             for row in rows
         ]
@@ -173,7 +176,7 @@ class PgVectorStore:
         SELECT c.chunk_id, c.source_id, c.clean_text,
                ts_rank(to_tsvector('simple', c.clean_text),
                        plainto_tsquery('simple', %s)) AS rank,
-               c.metadata
+               c.metadata, c.speaker, c.speaker_role
         FROM chunks_v2 c
         WHERE {where}
           AND to_tsvector('simple', c.clean_text) @@ plainto_tsquery('simple', %s)
@@ -191,6 +194,8 @@ class PgVectorStore:
                 content=row[2] or "",
                 similarity=float(row[3] or 0.0),
                 metadata=row[4] or {},
+                speaker=row[5] or "",
+                speaker_role=row[6] or "",
             )
             for row in rows
         ]

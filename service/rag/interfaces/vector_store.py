@@ -11,6 +11,8 @@ class SearchResult:
     content: str
     similarity: float
     metadata: dict[str, Any]
+    speaker: str = ""
+    speaker_role: str = ""
     embedding: list[float] | None = field(default=None, repr=False)
 
 

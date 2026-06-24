@@ -215,6 +215,8 @@ def run(state: QAState) -> QAState:
             "title": r.get("title", ""),
             "chunk_id": r.get("chunk_id", ""),
             "similarity": r.get("similarity", 0.0),
+            "speaker": r.get("speaker", ""),
+            "speaker_role": r.get("speaker_role", ""),
             "metadata": r.get("metadata", {}),
         }
         for r in results

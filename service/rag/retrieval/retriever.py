@@ -271,7 +271,7 @@ class Retriever:
         seen_chunk_ids: set[str] = set()
         speaker_bucket: dict[str, list[dict]] = {}
         for doc in docs:
-            speaker = str((doc.get("metadata") or {}).get("speaker", "")).strip() or "UNKNOWN"
+            speaker = str(doc.get("speaker") or (doc.get("metadata") or {}).get("speaker", "")).strip() or "UNKNOWN"
             speaker_bucket.setdefault(speaker, []).append(doc)
 
         # round-robin으로 speaker 다양성을 유지해 편향을 줄인다.
@@ -348,6 +348,8 @@ class Retriever:
                 "url": row.metadata.get("url", ""),
                 "similarity": row.similarity,
                 "hybrid_score": row.similarity,
+                "speaker": row.speaker,
+                "speaker_role": row.speaker_role,
                 "metadata": row.metadata,
             }
 

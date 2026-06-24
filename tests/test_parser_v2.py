@@ -26,6 +26,20 @@ def test_role_after_name():
     assert turns[0]["speaker_role"] == "장관"
 
 
+def test_long_role_before_name():
+    turns = extract_turns("src_001", 2, "◯외교부장관 조태열 저의 바람도 그렇습니다.")
+    assert turns[0]["speaker"] == "조태열"
+    assert turns[0]["speaker_role"] == "외교부장관"
+    assert turns[0]["clean_text"] == "저의 바람도 그렇습니다."
+
+
+def test_long_role_before_name_without_space():
+    turns = extract_turns("src_001", 2, "◯통일부장관김영호 예, 답변드리겠습니다.")
+    assert turns[0]["speaker"] == "김영호"
+    assert turns[0]["speaker_role"] == "통일부장관"
+    assert turns[0]["clean_text"] == "예, 답변드리겠습니다."
+
+
 def test_extracts_multiple_turns():
     text = "◯위원장 김석기 첫 번째 발언입니다.\n◯홍길동 위원 두 번째 발언입니다."
     turns = extract_turns("src_001", 1, text)
@@ -61,3 +75,15 @@ def test_skips_empty_body():
 def test_section_type_is_body():
     turns = extract_turns("src_001", 1, "◯김철수 위원 발언 내용입니다.")
     assert turns[0]["section_type"] == "body"
+
+
+def test_continuation_inherits_previous_speaker():
+    turns = extract_turns(
+        "src_001",
+        8,
+        "앞 페이지 발언이 계속 이어지는 문장입니다. 별도 발언자 마커가 없으며 이전 페이지의 발언이 자연스럽게 이어지고 있습니다.",
+        default_speaker="조태열",
+        default_role="외교부장관",
+    )
+    assert turns[0]["speaker"] == "조태열"
+    assert turns[0]["speaker_role"] == "외교부장관"

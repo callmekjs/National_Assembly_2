@@ -85,7 +85,10 @@ def _build_numbered_context(state: QAState) -> str:
         if not body:
             continue
         meta = doc.get("metadata") or {}
-        speaker = str(meta.get("speaker") or "").strip() or "미상"
+        speaker_raw = doc.get("speaker") or meta.get("speaker") or ""
+        role_raw = doc.get("speaker_role") or ""
+        speaker_label = f"{speaker_raw} {role_raw}".strip() if role_raw else speaker_raw
+        speaker = speaker_label or "미상"
         date = doc.get("date") or "날짜 미상"
         sections.append(f"[{idx}] (회의일 {date}) 발언자: {speaker}\n{body}")
     return "\n\n".join(sections)
