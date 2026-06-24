@@ -57,13 +57,48 @@ def _quote_snippet(chunk_text: str, max_len: int = 160) -> str:
     return cut.rstrip(" ,.;:，、") + "..."
 
 
+def _speaker_from_text(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(r"\[발언자:\s*([^\]\n]+)\]", t)
+    if m:
+        return m.group(1).strip()
+    m = re.match(r"[○◯]\s*([가-힣A-Za-z0-9·ㆍ-]{2,20}(?:\s+[가-힣A-Za-z0-9·ㆍ-]{1,20})?)", t)
+    return m.group(1).strip() if m else ""
+
+
+def _speaker_label(doc: dict) -> str:
+    meta = doc.get("metadata") or {}
+    speaker = str(doc.get("speaker") or meta.get("speaker") or "").strip()
+    role = str(doc.get("speaker_role") or meta.get("speaker_role") or "").strip()
+    if not speaker:
+        speaker = _speaker_from_text(doc.get("chunk_text", "") or doc.get("content", ""))
+    if speaker and role and role not in speaker:
+        return f"{speaker} {role}"
+    return speaker or role or "발언자 미상"
+
+
+def _build_chunk_with_context(doc: dict) -> str:
+    """prev_context / next_context가 있으면 발언 전후를 함께 구성."""
+    prev = (doc.get("prev_context") or "").strip()
+    text = (doc.get("chunk_text") or "").strip()
+    nxt = (doc.get("next_context") or "").strip()
+    parts: list[str] = []
+    if prev:
+        parts.append(f"[이전 발언] {prev}")
+    parts.append(text)
+    if nxt:
+        parts.append(f"[다음 발언] {nxt}")
+    return "\n".join(parts)
+
+
 def run(state: QAState) -> QAState:
     docs = state.get("reranked") or state.get("retrieved", [])
-    state["context"] = "\n\n".join((d.get("chunk_text") or "") for d in docs[:5])[:8000]
+    state["context"] = "\n\n".join(_build_chunk_with_context(d) for d in docs[:5])[:8000]
     state["citations"] = []
     for d in docs[:5]:
         meta = d.get("metadata") or {}
-        sp = str(meta.get("speaker") or "").strip()
         state["citations"].append(
             {
                 "source_id": d.get("source_id", ""),
@@ -71,7 +106,8 @@ def run(state: QAState) -> QAState:
                 "url": d.get("url", ""),
                 "title": d.get("title", ""),
                 "chunk_id": d.get("chunk_id", ""),
-                "speaker": sp or "발언자 미상",
+                "speaker": _speaker_label(d),
+                "speaker_role": str(d.get("speaker_role") or meta.get("speaker_role") or "").strip(),
                 "quote": _quote_snippet(d.get("chunk_text", "") or ""),
                 "chunk_text": (d.get("chunk_text") or "").strip(),
                 "source_path": str(meta.get("source_path") or "").strip(),
