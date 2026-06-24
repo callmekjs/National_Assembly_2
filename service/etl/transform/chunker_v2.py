@@ -72,6 +72,9 @@ def _merge_turns(turns: list[dict]) -> list[dict]:
 
 def _build_record(chunk: dict, source_id: str) -> dict:
     text = chunk.get("clean_text", "")
+    token_count = _count_tokens(text)
+    meta = dict(chunk.get("metadata", {}))
+    meta["token_count"] = token_count  # metadata JSONB에 포함해야 DB에 저장됨
     return {
         "chunk_id": _make_chunk_id(chunk),
         "source_id": source_id,
@@ -83,8 +86,8 @@ def _build_record(chunk: dict, source_id: str) -> dict:
         "raw_text": text,
         "clean_text": text,
         "embed_text": _make_embed_text(chunk),
-        "metadata": chunk.get("metadata", {}),
-        "token_count": _count_tokens(text),
+        "metadata": meta,
+        "token_count": token_count,
     }
 
 
