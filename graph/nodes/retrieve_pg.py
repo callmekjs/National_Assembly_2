@@ -141,6 +141,7 @@ def run(state: QAState) -> QAState:
     use_score_norm = bool(meta.get("use_score_norm", False))
     use_ensemble_reranker = bool(meta.get("use_ensemble_reranker", False))
     eval_recall = bool(meta.get("eval_recall", False))
+    use_v2_retrieval = bool(meta.get("use_v2_retrieval", False))
 
     _search_kwargs = dict(
         alpha=alpha,
@@ -170,8 +171,19 @@ def run(state: QAState) -> QAState:
 
     # Rule 1: 비교 쿼리는 두 주체 각각 별도 검색 후 병합
     comparison_subjects = meta.get("query_comparison_subjects") or []
-    #st.write (comparison_subjects) 
-    if len(comparison_subjects) == 2:
+    #st.write (comparison_subjects)
+    # v2 검색 경로 (use_v2_retrieval=True)
+    if use_v2_retrieval:
+        results = retriever.search_v2(
+            query=query,
+            top_k=top_k,
+            committee=committee,
+            date_from=date_from,
+            date_to=date_to,
+            use_neural_reranker=bool(meta.get("use_neural_reranker", False)),
+        )
+    # v1 검색 경로 (기존 로직 완전 유지)
+    elif len(comparison_subjects) == 2:
         per_k = max(top_k * 2, 15)
         seen_ids: set[str] = set()
         results = []
@@ -188,7 +200,7 @@ def run(state: QAState) -> QAState:
                     seen_ids.add(cid)
                     results.append(r)
         print(f"[Retrieve] 비교쿼리 분리 검색: {len(results)}개 병합")
-    else: # 비교대상이 없는 경우의 쿼리
+    else:
         results = retriever.search(query=query, top_k=top_k, **_search_kwargs)
     state["retrieval_empty"] = len(results) == 0
     state["retrieved"] = [
