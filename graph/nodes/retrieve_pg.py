@@ -102,7 +102,7 @@ def _clean_chunk(text: str) -> str:
     t = _trim_dangling_head(t)
     return t
 
-retriever = Retriever(model_type=EmbeddingModelType.MULTILINGUAL_E5_SMALL, enable_temporal_filter=False)
+retriever = Retriever(model_type=EmbeddingModelType.MULTILINGUAL_E5_LARGE, enable_temporal_filter=False)
 
 
 def run(state: QAState) -> QAState:

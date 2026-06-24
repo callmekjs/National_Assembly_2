@@ -76,7 +76,7 @@ def run(
 ) -> dict:
     """embed_text 임베딩 실행. 반환값: {"embedded": int, "skipped": int}"""
     conn = _connect()
-    encoder = EmbeddingEncoder(EmbeddingModelType.MULTILINGUAL_E5_SMALL)
+    encoder = EmbeddingEncoder(EmbeddingModelType.MULTILINGUAL_E5_LARGE)
 
     skip_existing = not force
     with conn.cursor() as cur:

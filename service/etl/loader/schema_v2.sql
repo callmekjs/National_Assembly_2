@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_v2_fts
 CREATE TABLE IF NOT EXISTS embeddings_e5_v2 (
     id          SERIAL PRIMARY KEY,
     chunk_id    VARCHAR(255) REFERENCES chunks_v2(chunk_id) ON DELETE CASCADE,
-    embedding   vector(384) NOT NULL,
+    embedding   vector(1024) NOT NULL,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(chunk_id)
 );

@@ -480,13 +480,22 @@ def _render_sidebar() -> None:
                 st.rerun()
 
         if st.session_state.chat_sessions:
-            for session_id, session in st.session_state.chat_sessions.items():
-                is_current = session_id == st.session_state.current_session_id
+            current_id = st.session_state.current_session_id
+            all_ids = list(st.session_state.chat_sessions.keys())
+            # 최신 5개만 표시 (현재 세션은 항상 포함)
+            recent_ids = all_ids[-5:]
+            if current_id not in recent_ids:
+                recent_ids = [current_id] + recent_ids[-4:]
+            for session_id in reversed(recent_ids):
+                session = st.session_state.chat_sessions.get(session_id)
+                if not session:
+                    continue
+                is_current = session_id == current_id
                 title = session["title"][:22] + ("..." if len(session["title"]) > 22 else "")
                 col1, col2 = st.columns([4, 1])
                 with col1:
                     if st.button(
-                        f"{'현재 · ' if is_current else ''}{title}",
+                        title,
                         key=f"session_{session_id}",
                         width="stretch",
                     ):
