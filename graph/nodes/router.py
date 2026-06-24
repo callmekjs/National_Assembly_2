@@ -16,6 +16,17 @@ _DOC_NAME_PATTERN = re.compile(
     r"(?:보고서|로드맵|백서|계획서|협약서|합의문|성명서|선언문|결의문)"
 )
 
+# 여야 비교 쿼리 감지
+_PARTY_COMPARE_DIRECT = re.compile(
+    r"여야|여당과\s*야당|야당과\s*여당"
+)
+_PARTY_NAMES = re.compile(
+    r"더불어민주당|민주당|국민의힘|조국혁신당"
+)
+_COMPARISON_VERBS = re.compile(
+    r"비교|차이|다르|달리|대조|입장\s*차|갈리|맞서|충돌|대립"
+)
+
 # 단독 발언자 질문 감지: 직함+이름 또는 이름+직함 패턴
 _SPEAKER_UNIT = re.compile(
     # 직함 + 이름 순서 (예: "위원장 김석기")
@@ -24,6 +35,17 @@ _SPEAKER_UNIT = re.compile(
     # 이름/부처 + 직함 순서 (예: "통일부 장관", "조태열 장관")
     r"(?:[가-힣]{2,4}\s+)?(?:[가-힣]+부\s*)?(?:장관|의원|위원장|위원|차관|총장|원장|대표|의장)"
 )
+
+
+def _is_party_comparison_query(question: str) -> bool:
+    """여야 비교 의도가 있는 쿼리인지 감지."""
+    if _PARTY_COMPARE_DIRECT.search(question):
+        return True
+    if len(set(_PARTY_NAMES.findall(question))) >= 2:
+        return True
+    if ("야당" in question or "여당" in question) and _COMPARISON_VERBS.search(question):
+        return True
+    return False
 
 
 def _extract_query_speaker_kw(question: str) -> list[str]:
@@ -72,6 +94,12 @@ def run(state: QAState) -> QAState:
             if comparison:
                 state["meta"]["query_comparison_subjects"] = comparison
                 logger.info("Router: query_comparison_subjects=%s", comparison)
+
+        # 여야 비교 쿼리 감지 → balance_speakers 자동 활성화
+        # UI에서 이미 켠 경우엔 그대로 유지
+        if not state["meta"].get("balance_speakers") and _is_party_comparison_query(question):
+            state["meta"]["balance_speakers"] = True
+            logger.info("Router: party_comparison detected → balance_speakers=True")
 
         # 쿼리에서 날짜 범위 추출 — UI에서 이미 명시한 경우엔 덮어쓰지 않음
         if not state["meta"].get("date_from") and not state["meta"].get("date_to"):
