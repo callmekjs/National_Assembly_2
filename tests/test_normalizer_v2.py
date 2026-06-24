@@ -10,6 +10,11 @@ def test_classify_body_with_speaker_marker():
     assert classify_section("◯위원장 김석기 회의를 시작하겠습니다.") == "body"
 
 
+def test_classify_body_overrides_appendix_phrase():
+    raw = "◯위원장 김석기 열심히 설명 드렸습니다. 이상입니다."
+    assert classify_section(raw) == "body"
+
+
 def test_classify_agenda():
     assert classify_section("의 사 일 정\n1. 외교통일에 관한 질의") == "agenda"
 

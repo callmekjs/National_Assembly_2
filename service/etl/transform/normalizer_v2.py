@@ -24,12 +24,12 @@ def classify_section(raw_text: str) -> str:
     sample = raw_text[:600]
     if re.search(r"국\s*회\s*사\s*무\s*처", sample):
         return "cover"
-    if re.search(r"(의\s*사\s*일\s*정|상\s*정\s*된?\s*안\s*건|회\s*의\s*안\s*건)", sample):
-        return "agenda"
-    if re.search(r"(보\s*고\s*사\s*항|붙\s*임\s*\d|이\s*상\s*입니다)", sample):
-        return "appendix"
     if "◯" in raw_text:
         return "body"
+    if re.search(r"(의\s*사\s*일\s*정|상\s*정\s*된?\s*안\s*건|회\s*의\s*안\s*건)", sample):
+        return "agenda"
+    if re.search(r"(보\s*고\s*사\s*항|붙\s*임\s*\d)", sample):
+        return "appendix"
     return "body"
 
 
