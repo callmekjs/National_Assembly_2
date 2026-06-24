@@ -76,7 +76,16 @@
 - [x] **대화 히스토리**: 이전 질문·답변을 컨텍스트로 유지하는 멀티턴 대화 (2026-06-22)
 - [x] **답변 신뢰도 표시**: 검색 hit 수·유사도 평균을 UI에 노출 (2026-06-22)
 
-### 3-2. 프롬프트 고도화 ✅ 완료
+### 3-2. 재현성(Reproducibility) 개선
+
+- [x] **temperature 인하 + seed 고정**: `OPENAI_TEMPERATURE=0` + `seed=42` 파라미터 → 동일 질문 동일 답변 (2026-06-24)
+- [ ] **응답 캐시 (Exact Cache)**: 질문 hash → 답변 저장 → 재실행 시 LLM 호출 생략
+- [ ] **구조화 출력 (JSON)**: `response_format=json_object`로 인용 번호 선택 안정화
+- [ ] **Semantic Cache**: 유사 질문(cosine ≥ 0.95) 재활용 — 트래픽 생기면 그때 추가
+
+> **진단 메모 (2026-06-24)**: 원인은 Rerank가 아닌 temperature=0.7. Neural Reranker는 이미 결정적(deterministic). 자세한 내용 → CHANGELOG.md
+
+### 3-3. 프롬프트 고도화 ✅ 완료
 
 - [x] 위원회별 도메인 특화 프롬프트 (외교·국방·경제 등 맥락 다름) (2026-06-22)
 - [x] **근거 없으면 답 안 함** 강화: Grounding Check 노드 강화 (2026-06-22)

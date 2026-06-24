@@ -6,6 +6,15 @@
 
 ---
 
+## [재현성 진단 · 개선 방향 정의] 2026-06-24
+
+### Investigated
+- **재현성 문제 진단**: 재실행마다 세부근거·참고자료가 바뀌는 원인이 Rerank가 아닌 `temperature=0.7` (`llm_client.py:167, 239`)임을 확인
+  - `graph/nodes/rerank.py`는 점수 내림차순 정렬만 수행, 실제 Neural Reranker(`BAAI/bge-reranker-v2-m3`)는 `search_v2()` 내부에서 인라인 실행 — 이미 결정적(deterministic)
+  - 실무 해결 패턴 3단계: ① temperature 인하 + seed 고정 (5분) → ② 응답 캐시 exact/semantic (운영 표준) → ③ JSON 구조화 출력으로 인용 번호 안정화
+
+---
+
 ## [Day 14 패키징 · Day 15 발표 마감] 2026-06-24
 
 재현성 패키징, E2E 통합 테스트, 발표 포트폴리오 패키지 완성.

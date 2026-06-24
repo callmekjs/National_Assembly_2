@@ -164,7 +164,8 @@ def _stream_openai(
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
+        "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0")),
+        "seed": int(os.getenv("OPENAI_SEED", "42")),
         "stream": True,
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -236,7 +237,8 @@ def _chat_openai(
         "model": model,
         "messages": messages,
         "max_tokens": max_tokens,
-        "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
+        "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0")),
+        "seed": int(os.getenv("OPENAI_SEED", "42")),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
@@ -267,9 +269,7 @@ def _chat_local_hf(
         input_ids=input_ids,
         attention_mask=attention_mask,
         max_new_tokens=max_tokens,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9,
+        do_sample=False,
         pad_token_id=tokenizer.eos_token_id,
         eos_token_id=tokenizer.eos_token_id,
         use_cache=os.environ.get("IS_RUNPOD", "False").lower() == "true",
