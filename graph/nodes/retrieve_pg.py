@@ -142,6 +142,11 @@ def run(state: QAState) -> QAState:
     use_ensemble_reranker = bool(meta.get("use_ensemble_reranker", False))
     eval_recall = bool(meta.get("eval_recall", False))
     use_v2_retrieval = bool(meta.get("use_v2_retrieval", False))
+    require_speaker = bool(
+        meta.get("speaker")
+        or meta.get("query_speaker_kw")
+        or meta.get("query_comparison_subjects")
+    )
 
     _search_kwargs = dict(
         alpha=alpha,
@@ -167,6 +172,7 @@ def run(state: QAState) -> QAState:
         use_score_norm=use_score_norm,
         use_ensemble_reranker=use_ensemble_reranker,
         eval_recall=eval_recall,
+        require_speaker=require_speaker,
     )
 
     # Rule 1: 비교 쿼리는 두 주체 각각 별도 검색 후 병합
@@ -184,6 +190,7 @@ def run(state: QAState) -> QAState:
             date_to=date_to,
             speaker=meta.get("speaker") or None,
             use_neural_reranker=use_neural_reranker,
+            require_speaker=require_speaker,
         )
     # v1 검색 경로 (기존 로직 완전 유지)
     elif len(comparison_subjects) == 2:
@@ -217,6 +224,9 @@ def run(state: QAState) -> QAState:
             "similarity": r.get("similarity", 0.0),
             "speaker": r.get("speaker", ""),
             "speaker_role": r.get("speaker_role", ""),
+            "prev_context": (r.get("metadata") or {}).get("prev_context", ""),
+            "next_context": (r.get("metadata") or {}).get("next_context", ""),
+            "token_count": (r.get("metadata") or {}).get("token_count"),
             "metadata": r.get("metadata", {}),
         }
         for r in results

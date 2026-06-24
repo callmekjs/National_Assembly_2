@@ -58,6 +58,7 @@ class Retriever:
         use_ensemble_reranker: bool = False,
         eval_recall: bool = False,
         eval_k: int = 3,
+        require_speaker: bool = False,
     ) -> list[dict]:
         # Multi-query Retrieval
         if use_multi_query:
@@ -67,6 +68,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
+                require_speaker=require_speaker,
             )
             return multi_query_search(self, query, top_k=top_k,
                                       n_variants=multi_query_variants, **search_kwargs)
@@ -79,6 +81,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
+                require_speaker=require_speaker,
             )
             return fusion_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -90,6 +93,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
+                require_speaker=require_speaker,
             )
             return step_back_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -101,6 +105,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
+                require_speaker=require_speaker,
             )
             return hyde_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -112,6 +117,7 @@ class Retriever:
             "date_from": df or "",
             "date_to": dt or "",
             "speaker": speaker or "",
+            "require_speaker": require_speaker,
         }
         multiplier = max(1, int(candidate_multiplier))
         candidate_k = max(top_k, top_k * multiplier)
@@ -138,12 +144,20 @@ class Retriever:
                 "lexical_score": lexical_score,
                 "keyword_boost": keyword_boost,
                 "hybrid_score": hybrid_score,
+                "speaker": row.metadata.get("speaker", ""),
+                "speaker_role": row.metadata.get("speaker_role", ""),
                 "metadata": row.metadata if include_metadata else {},
             }
             if use_mmr and row.embedding is not None:
                 entry["embedding"] = row.embedding
             out.append(entry)
-        out = sorted(out, key=lambda x: x.get("hybrid_score", x.get("similarity", 0.0)), reverse=True)
+        out = sorted(
+            out,
+            key=lambda x: (
+                -float(x.get("hybrid_score", x.get("similarity", 0.0)) or 0.0),
+                str(x.get("chunk_id") or x.get("source_id") or ""),
+            ),
+        )
         out = self._dedupe_by_chunk_id(out)
 
         # Score Normalization — min-max 정규화 후 앙상블 재정렬
@@ -298,6 +312,25 @@ class Retriever:
                 break
         return selected[:top_k]
 
+    def _enrich_with_context(self, results: list[dict]) -> list[dict]:
+        """metadata의 prev_context / next_context를 이용해 enriched_text 필드를 추가."""
+        enriched = []
+        for r in results:
+            meta = r.get("metadata") or {}
+            prev = meta.get("prev_context", "")
+            nxt = meta.get("next_context", "")
+            content = r.get("content", "")
+            parts: list[str] = []
+            if prev:
+                parts.append(f"[이전 발언]\n{prev}")
+            parts.append(f"[발언 내용]\n{content}")
+            if nxt:
+                parts.append(f"[다음 발언]\n{nxt}")
+            result = r.copy()
+            result["enriched_text"] = "\n\n".join(parts)
+            enriched.append(result)
+        return enriched
+
     def _expand_query(self, query: str) -> str:
         q = (query or "").strip()
         if not q:
@@ -324,6 +357,7 @@ class Retriever:
         date_to: str | None = None,
         speaker: str | None = None,
         use_neural_reranker: bool = False,
+        require_speaker: bool = False,
     ) -> list[dict]:
         """True Hybrid: vector top-50 + FTS top-50 → RRF → top_k."""
         from service.rag.retrieval.date_range import normalize_meeting_date_range
@@ -334,6 +368,7 @@ class Retriever:
             "date_from": df or "",
             "date_to": dt or "",
             "speaker": speaker or "",
+            "require_speaker": require_speaker,
         }
         vector_results = self.store.search_similar_v2(vector, top_k=50, filters=filters)
         fts_results = self.store.search_keyword_v2(query, top_k=50, filters=filters)
@@ -366,4 +401,4 @@ class Retriever:
         else:
             merged = merged[:top_k]
 
-        return merged
+        return self._enrich_with_context(merged)

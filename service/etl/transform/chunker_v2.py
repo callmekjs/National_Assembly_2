@@ -11,6 +11,16 @@ OUT_DIR = ROOT / "data" / "v2" / "transform" / "final"
 MIN_CHARS = 300
 MAX_CHARS = 600
 SKIP_CHARS = 30
+CONTEXT_CHARS = 100  # prev/next context window
+
+
+def _count_tokens(text: str) -> int:
+    """토큰 수 추정. tiktoken 미설치 시 글자 수 // 2로 폴백 (한국어 기준)."""
+    try:
+        import tiktoken
+        return len(tiktoken.get_encoding("cl100k_base").encode(text))
+    except Exception:
+        return max(1, len(text) // 2)
 
 
 def _make_chunk_id(turn: dict) -> str:
@@ -74,7 +84,18 @@ def _build_record(chunk: dict, source_id: str) -> dict:
         "clean_text": text,
         "embed_text": _make_embed_text(chunk),
         "metadata": chunk.get("metadata", {}),
+        "token_count": _count_tokens(text),
     }
+
+
+def _add_context_window(records: list[dict]) -> list[dict]:
+    """각 청크 metadata에 인접 발언 앞 100자를 prev_context / next_context로 추가."""
+    for i, rec in enumerate(records):
+        if i > 0:
+            rec["metadata"]["prev_context"] = records[i - 1]["clean_text"][:CONTEXT_CHARS]
+        if i < len(records) - 1:
+            rec["metadata"]["next_context"] = records[i + 1]["clean_text"][:CONTEXT_CHARS]
+    return records
 
 
 def main() -> None:
@@ -96,6 +117,7 @@ def main() -> None:
 
             turns = [t for t in turns if len(t.get("clean_text", "")) >= SKIP_CHARS]
             records = [_build_record(c, sid) for c in _merge_turns(turns)]
+            records = _add_context_window(records)
 
             src_out = CHUNKS_DIR / sid
             src_out.mkdir(parents=True, exist_ok=True)
