@@ -42,6 +42,14 @@ _model = None
 # ── 인메모리 응답 캐시 ──────────────────────────────────────────────
 _CACHE: dict[str, str] = {}
 
+# ── 최근 API 호출 토큰 사용량 ─────────────────────────────────────────
+_last_usage: dict[str, int] = {}
+
+
+def get_last_usage() -> dict[str, int]:
+    """최근 chat()/chat_stream() 호출의 토큰 사용량 반환."""
+    return dict(_last_usage)
+
 
 def _cache_key(system: str, user: str, history: list[dict] | None = None) -> str:
     history_str = json.dumps(history or [], ensure_ascii=False, sort_keys=True)
@@ -184,6 +192,7 @@ def _stream_openai(
         "temperature": float(os.getenv("OPENAI_TEMPERATURE", "0")),
         "seed": int(os.getenv("OPENAI_SEED", "42")),
         "stream": True,
+        "stream_options": {"include_usage": True},
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -203,7 +212,15 @@ def _stream_openai(
                 break
             try:
                 obj = json.loads(data)
-                delta = obj["choices"][0]["delta"].get("content", "")
+                # 마지막 usage 청크 (choices가 비어 있고 usage 있음)
+                if obj.get("usage"):
+                    usage = obj["usage"]
+                    _last_usage.update({
+                        "prompt_tokens": usage.get("prompt_tokens", 0),
+                        "completion_tokens": usage.get("completion_tokens", 0),
+                        "total_tokens": usage.get("total_tokens", 0),
+                    })
+                delta = obj["choices"][0]["delta"].get("content", "") if obj.get("choices") else ""
                 if delta:
                     yield delta
             except (json.JSONDecodeError, KeyError, IndexError):
@@ -276,6 +293,12 @@ def _chat_openai(
     resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
     resp.raise_for_status()
     data = resp.json()
+    usage = data.get("usage") or {}
+    _last_usage.update({
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    })
     return str(data["choices"][0]["message"]["content"]).strip()
 
 

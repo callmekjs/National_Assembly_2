@@ -7,7 +7,7 @@ import time
 from datetime import date
 
 from graph.state import QAState
-from service.llm.llm_client import chat, is_chat_failure_message
+from service.llm.llm_client import chat, get_last_usage, is_chat_failure_message
 from service.llm.prompt_templates import build_system_prompt, build_user_prompt
 
 logger = logging.getLogger(__name__)
@@ -206,13 +206,19 @@ def run(state: QAState) -> QAState:
 
         latency = state.get("latency_ms") or {}
         latency["generate_ms"] = round(elapsed_ms, 1)
+        usage = get_last_usage()
+        if usage.get("total_tokens"):
+            latency["prompt_tokens"] = usage["prompt_tokens"]
+            latency["completion_tokens"] = usage["completion_tokens"]
+            latency["total_tokens"] = usage["total_tokens"]
         state["latency_ms"] = latency
 
         logger.info(
-            "[Generate] ok ms=%s prompt_est_tok=%s out_est_tok=%s out_chars=%s",
+            "[Generate] ok ms=%s prompt_tok=%s completion_tok=%s total_tok=%s out_chars=%s",
             elapsed_ms,
-            _est_tokens(prompt_blob),
-            _est_tokens(answer),
+            usage.get("prompt_tokens", _est_tokens(prompt_blob)),
+            usage.get("completion_tokens", _est_tokens(answer)),
+            usage.get("total_tokens", "est"),
             len(answer),
         )
 

@@ -16,7 +16,7 @@ import pandas as pd
 import streamlit as st
 from datetime import date, datetime
 from service.chat_service import ChatService
-from service.llm.llm_client import llm_env_probe, cache_clear as llm_cache_clear, _CACHE as _llm_cache
+from service.llm.llm_client import llm_env_probe, cache_clear as llm_cache_clear, _CACHE as _llm_cache, get_last_usage as _llm_get_last_usage
 from graph.app_graph import build_app
 
 # 본문과 참고 자료 UI 분리용 마커(모델 출력에 포함되지 않음)
@@ -679,9 +679,19 @@ def _handle_user_input(user_input: str) -> None:
                 _append_message("assistant", _REFUSAL_WEAK)
             else:
                 system_prompt, user_prompt = build_prompts_from_state(lg_state)
+                import logging as _logging
+                _stream_logger = _logging.getLogger(__name__)
                 with st.chat_message("assistant", avatar="🤖"):
                     streamed_text = st.write_stream(
                         chat_stream(system_prompt, user_prompt, max_tokens=int(os.getenv("GENERATE_MAX_TOKENS", "1024")), history=history)
+                    )
+                _usage = _llm_get_last_usage()
+                if _usage.get("total_tokens"):
+                    _stream_logger.info(
+                        "[Generate/stream] prompt_tok=%s completion_tok=%s total_tok=%s",
+                        _usage.get("prompt_tokens"),
+                        _usage.get("completion_tokens"),
+                        _usage.get("total_tokens"),
                     )
 
                 # 기준 2: [n] 범위 검증
