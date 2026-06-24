@@ -480,11 +480,12 @@ _HISTORY_STRIP_PREFIXES = (
 
 def _strip_system_appends(text: str) -> str:
     """히스토리 전달 시 LLM이 모방하지 않도록 시스템이 붙인 경고·메타 문구 제거.
-    ## 한계 섹션도 제거 — 코드가 삽입한 *(비교 근거 부족)* 등 노이즈가 포함돼 있어
+    ## 확인된 범위 섹션도 제거 — 코드가 삽입한 *(비교 근거 부족)* 등 노이즈가 포함돼 있어
     LLM이 다음 턴에 이를 모방해 날조가 심화되는 것을 막는다.
     """
-    # 한계 섹션 통째로 제거
-    for header in ("## 한계\n", "## 한계 \n", "## 한계"):
+    # 확인된 범위 / 한계 섹션 통째로 제거 (구형 한계 헤더도 포함)
+    for header in ("## 확인된 범위\n", "## 확인된 범위 \n", "## 확인된 범위",
+                   "## 한계\n", "## 한계 \n", "## 한계"):
         idx = text.find(header)
         if idx != -1:
             text = text[:idx]
@@ -634,7 +635,7 @@ def _handle_user_input(user_input: str) -> None:
                 # 볼드 레이블 없는 세부 근거 섹션 제거
                 clean_text, _ = _remove_unlabeled_detail_section(clean_text)
 
-                # 기준 4: 미인용 문장 → ## 한계로 이동
+                # 기준 4: 미인용 문장 → ## 확인된 범위로 이동
                 # _pre_normalize: 헤더+본문 같은 줄 → 분리 후 점수 계산
                 score = _grounding_score(_pre_normalize(clean_text))
                 if score <= CITE_FULL_THRESHOLD:
@@ -938,7 +939,8 @@ def _normalize_llm_markdown(text: str) -> str:
     t = re.sub(r"(\])\s*(##\s)", r"\1\n\n\2", t)
     # "## 세부 근거 - 첫불릿" 한 줄인 경우
     t = re.sub(r"(##\s*세부\s*근거)\s*-\s+", r"\1\n\n- ", t, flags=re.IGNORECASE)
-    # "## 한계 본문" 첫 글자 앞에 빈 줄
+    # "## 확인된 범위 본문" 첫 글자 앞에 빈 줄 (구형 한계 헤더도 처리)
+    t = re.sub(r"(##\s*확인된\s*범위)\s+([^\n#])", r"\1\n\n\2", t)
     t = re.sub(r"(##\s*한계)\s+([^\n#])", r"\1\n\n\2", t)
     # 문장 끝 다음 불릿 "- "
     t = re.sub(r"\.\s+-\s+", ".\n- ", t)

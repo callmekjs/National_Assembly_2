@@ -2,16 +2,16 @@
 GroundingCheck 노드
 
 완료 기준:
-  1) 답변 주요 주장마다 [n] 붙음 — 미인용 문장은 ## 한계로 이동
+  1) 답변 주요 주장마다 [n] 붙음 — 미인용 문장은 ## 확인된 범위로 이동
   2) [n]이 실제 검색 결과 범위 안에 있음 — 범위 밖은 [?]로 교체
   3) 인용한 청크가 주장을 뒷받침함 — 키워드 오버랩 휴리스틱 체크
-  4) 근거 없는 문장은 ## 한계로 이동
+  4) 근거 없는 문장은 ## 확인된 범위로 이동
   5) 검색 결과가 약하면 답변 생성 거부 (MIN_DOCS / WEAK_SCORE 임계값)
   6) 정답 없는 질문 → 무리한 답변 없음 (테스트: unanswerable_eval.py)
 
 grounding_level:
   FULL    (score > 0.6) : 인용 충분
-  PARTIAL (0 < score ≤ 0.6) : 일부 미인용 — 미인용 문장 한계로 이동
+  PARTIAL (0 < score ≤ 0.6) : 일부 미인용 — 미인용 문장 확인된 범위로 이동
   NONE    (score == 0)  : 인용 없음 — 경고 또는 약한 검색 시 답변 거부
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ _WARN_PARTIAL = (
     "아래 참고 자료를 직접 검토하세요.*"
 )
 _WARN_SPEAKER_MISMATCH = (
-    "\n\n*⚠ 일부 세부 근거의 출처 발언자가 주장 인물과 일치하지 않아 한계로 이동했습니다. "
+    "\n\n*⚠ 일부 세부 근거의 출처 발언자가 주장 인물과 일치하지 않아 확인된 범위로 이동했습니다. "
     "참고 자료의 실제 발언자를 직접 확인하세요.*"
 )
 _WARN_NONE = (
@@ -188,10 +188,10 @@ def _validate_speaker_bullets(
 ) -> tuple[str, bool]:
     """
     세부 근거 불릿 2중 검증:
-    - 단독 쿼리 Bug B: 청크 발언자가 질문 주체와 무관 → ## 한계로 이동
+    - 단독 쿼리 Bug B: 청크 발언자가 질문 주체와 무관 → ## 확인된 범위로 이동
     - 단독 쿼리 Bug A: 불릿 명시 발언자 ≠ 실제 청크 발언자 → 실제 발언자로 교정
-    - 비교 쿼리: 청크 발언자가 두 주체 중 어느 쪽도 아닌 제3자 → ## 한계로 이동
-    - 비교 쿼리: 명시 발언자와 청크 발언자가 다른 주체이거나 제3자 → ## 한계로 이동
+    - 비교 쿼리: 청크 발언자가 두 주체 중 어느 쪽도 아닌 제3자 → ## 확인된 범위로 이동
+    - 비교 쿼리: 명시 발언자와 청크 발언자가 다른 주체이거나 제3자 → ## 확인된 범위로 이동
     반환: (수정된 답변, 변경 여부)
     """
     if not docs:
@@ -239,19 +239,19 @@ def _validate_speaker_bullets(
 
                 if label_subj_idx >= 0:
                     # LLM이 비교 주체 이름으로 불릿 작성했지만 실제 청크는 제3자 발언
-                    # → 발언자 허위 귀속: 한계로 이동 (유지하면 오정보 노출)
+                    # → 발언자 허위 귀속: 확인된 범위로 이동 (유지하면 오정보 노출)
                     moved.append(
                         f"- {s.lstrip('- ').strip()} "
                         f"*(발언자 불일치: {stated_label} 발언 아님 — 실제 출처 {chunk_speaker})*"
                     )
                     changed = True
                     print(
-                        f"[GroundingCheck] 비교쿼리 발언자 불일치 → 한계 이동: "
+                        f"[GroundingCheck] 비교쿼리 발언자 불일치 → 확인된 범위 이동: "
                         f"'{stated_label}' ← {chunk_speaker}"
                     )
                     continue
 
-                # 볼드 레이블도 비교 주체가 아닌 완전한 제3자 → 한계로 이동
+                # 볼드 레이블도 비교 주체가 아닌 완전한 제3자 → 확인된 범위로 이동
                 moved.append(
                     f"- {s.lstrip('- ').strip()} "
                     f"*(직접 발언 아님: {chunk_speaker} 발언 기반)*"
@@ -286,7 +286,7 @@ def _validate_speaker_bullets(
                     print(f"[GroundingCheck] 비교쿼리 발언자 교정: '{stated}' → '{chunk_speaker}'")
                     continue
         else:
-            # 단독 쿼리 Bug B: 질문 주체 키워드와 청크 발언자 불일치 → 한계로 이동
+            # 단독 쿼리 Bug B: 질문 주체 키워드와 청크 발언자 불일치 → 확인된 범위로 이동
             if (
                 query_speaker_kw
                 and chunk_speaker
@@ -317,7 +317,7 @@ def _validate_speaker_bullets(
             "\n\n*(아래 항목은 질문 주체 외 발언자 내용입니다.)*\n"
             + "\n".join(moved)
         )
-        limit_header = "## 한계"
+        limit_header = "## 확인된 범위"
         if limit_header in result:
             result = result.replace(limit_header, limit_header + note, 1)
         else:
@@ -416,7 +416,7 @@ def _check_per_subject_grounding(
     new_lines = []
     for line in lines:
         s = line.strip()
-        if re.match(r"#{1,4}\s*한계", s):
+        if re.match(r"#{1,4}\s*(?:한계|확인된\s*범위)", s):
             in_limits = True
             new_lines.append(line)
             continue
@@ -472,7 +472,7 @@ def _check_per_subject_grounding(
                 f"- **{subj_name}**: 직접 발언 근거를 회의록에서 찾을 수 없어 비교 근거 부족"
             )
         note_text = "\n*(비교 근거 부족)*\n" + "\n".join(notes)
-        limit_header = "## 한계"
+        limit_header = "## 확인된 범위"
         if limit_header in ans:
             ans = ans.replace(limit_header, limit_header + note_text, 1)
         else:
@@ -551,7 +551,7 @@ def _remove_contradictory_limits(ans: str) -> tuple[str, bool]:
 
     for line in lines:
         s = line.strip()
-        if re.match(r"#{1,4}\s*한계", s):
+        if re.match(r"#{1,4}\s*(?:한계|확인된\s*범위)", s):
             in_limits = True
             out.append(line)
             continue
@@ -559,7 +559,7 @@ def _remove_contradictory_limits(ans: str) -> tuple[str, bool]:
             in_limits = False
         if in_limits and _LIMITS_CONTRADICTION_RE.search(s):
             changed = True
-            print(f"[GroundingCheck] 한계 모순 문구 제거: '{s[:60]}'")
+            print(f"[GroundingCheck] 확인된 범위 모순 문구 제거: '{s[:60]}'")
             continue
         out.append(line)
 
@@ -575,9 +575,9 @@ def _pre_normalize(ans: str) -> str:
     """grounding 점수 계산 전: 헤더와 본문이 같은 줄에 붙어있으면 분리.
     공백 1개 이상으로 붙은 경우도 처리 (LLM이 ## 헤더 뒤 바로 본문 쓰는 경우).
     """
-    # 헤더 키워드(핵심 결론|세부 근거|한계) 뒤 공백 1개 이상으로 붙은 본문 분리
+    # 헤더 키워드(핵심 결론|세부 근거|확인된 범위|참고 자료) 뒤 공백 1개 이상으로 붙은 본문 분리
     t = re.sub(
-        r"(#{1,4}\s+(?:핵심\s*결론|세부\s*근거|한계)[^\n]*?)\s+([가-힣\-\*])",
+        r"(#{1,4}\s+(?:핵심\s*결론|세부\s*근거|확인된\s*범위|참고\s*자료|한계)[^\n]*?)\s+([가-힣\-\*])",
         r"\1\n\2",
         ans,
     )
@@ -636,7 +636,7 @@ def _fix_out_of_range(ans: str, num_docs: int) -> tuple[str, list[int]]:
 
 def _move_uncited_to_limits(ans: str) -> tuple[str, bool]:
     """
-    ## 세부 근거 불릿 중 [n] 없는 줄 → ## 한계로 이동.
+    ## 세부 근거 불릿 중 [n] 없는 줄 → ## 확인된 범위로 이동.
     ## 핵심 결론의 미인용 주요 문장 → 인라인 *(출처 미확인)* 표시.
     반환: (수정된 답변, 이동이 실제로 발생했는지)
     """
@@ -666,7 +666,7 @@ def _move_uncited_to_limits(ans: str) -> tuple[str, bool]:
             if has_cite:
                 out.append(line)
             else:
-                # 한계로 이동
+                # 확인된 범위로 이동
                 moved.append(f"- {stripped.lstrip('- ').strip()} *(출처 미확인)*")
         elif section.startswith("핵심 결론") and not has_cite:
             # 핵심 결론의 미인용 문장 → 인라인 표시
@@ -679,8 +679,8 @@ def _move_uncited_to_limits(ans: str) -> tuple[str, bool]:
 
     result = "\n".join(out)
 
-    # ## 한계 섹션에 이동된 항목 추가
-    limit_header = "## 한계"
+    # ## 확인된 범위 섹션에 이동된 항목 추가
+    limit_header = "## 확인된 범위"
     limit_note = (
         "\n\n*(아래 내용은 회의록에서 직접 인용 번호를 확인하지 못한 항목입니다.)*\n"
         + "\n".join(moved)
@@ -818,12 +818,12 @@ def run(state: QAState) -> QAState:
     )
 
     if should_process:
-        # ── 기준 4: 미인용 문장 → ## 한계로 이동 ─────────────────
+        # ── 기준 4: 미인용 문장 → ## 확인된 범위로 이동 ─────────────────
         if level in ("PARTIAL", "NONE"):
             ans, moved = _move_uncited_to_limits(ans)
             state["draft_answer"] = ans
             if moved:
-                print("[GroundingCheck] uncited sentences moved to 한계")
+                print("[GroundingCheck] uncited sentences moved to 확인된 범위")
 
         # ── 기준 1/전체: 최종 경고 ────────────────────────────────
         _is_comp = bool((state.get("meta") or {}).get("query_comparison_subjects"))
