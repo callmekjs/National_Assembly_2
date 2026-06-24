@@ -80,7 +80,7 @@ def _build_numbered_context(state: QAState) -> str:
     """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다. 답변에는 raw 메타 키(source= 등)를 노출하지 말라고 시스템에서 지시한다."""
     docs = state.get("reranked") or state.get("retrieved") or []
     sections: list[str] = []
-    for idx, doc in enumerate(docs[:5], start=1):
+    for idx, doc in enumerate(docs[:8], start=1):
         body = (doc.get("chunk_text") or "").strip()
         if not body:
             continue

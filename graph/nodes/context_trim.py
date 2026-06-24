@@ -115,9 +115,9 @@ def _build_chunk_with_context(doc: dict) -> str:
 
 def run(state: QAState) -> QAState:
     docs = state.get("reranked") or state.get("retrieved", [])
-    state["context"] = "\n\n".join(_build_chunk_with_context(d) for d in docs[:5])[:8000]
+    state["context"] = "\n\n".join(_build_chunk_with_context(d) for d in docs[:8])[:12000]
     state["citations"] = []
-    for d in docs[:5]:
+    for d in docs[:8]:
         meta = d.get("metadata") or {}
         state["citations"].append(
             {

@@ -180,7 +180,7 @@ def _stream_openai(
 
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
     messages = [{"role": "system", "content": system.strip()}]
     if history:
         messages.extend(history)
@@ -240,7 +240,7 @@ def chat_stream(
 
     if _use_openai():
         try:
-            print("[LLM] stream=True backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
+            print("[LLM] stream=True backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o"), file=sys.stderr)
             accumulated: list[str] = []
             for chunk in _stream_openai(system, user, max_tokens, history=history):
                 accumulated.append(chunk)
@@ -277,7 +277,7 @@ def _chat_openai(
 
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
     messages = [{"role": "system", "content": system.strip()}]
     if history:
         messages.extend(history)
@@ -382,7 +382,7 @@ def chat(
     result: str
     if _use_openai():
         try:
-            print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o-mini"), file=sys.stderr)
+            print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o"), file=sys.stderr)
             result = _chat_openai(system, user, max_tokens, history=history)
         except Exception as exc:
             print(f"[LLM] OpenAI 실패: {exc}", file=sys.stderr)
