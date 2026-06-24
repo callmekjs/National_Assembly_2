@@ -16,9 +16,12 @@ grounding_level:
 """
 from __future__ import annotations
 
+import logging
 import re
 
 from graph.state import QAState
+
+logger = logging.getLogger(__name__)
 
 # ── 임계값 ────────────────────────────────────────────────────────
 CITE_FULL_THRESHOLD   = 0.6   # 이 이상이면 FULL
@@ -747,6 +750,66 @@ def _check_citation_support(ans: str, docs: list[dict]) -> list[str]:
                     f"[n={n}] 인용 청크와 키워드 오버랩 없음 → '{s[:60]}...'"
                 )
     return warnings
+
+
+# ── LLM 자기검증 ─────────────────────────────────────────────────
+
+_VERIFY_SYSTEM = (
+    "너는 국회 회의록 RAG 답변 검증 전문가다. "
+    "제공된 [컨텍스트] 범위 안에서만 주장하는지 판단한다.\n\n"
+    "판단 규칙:\n"
+    "- 답변의 각 주장이 [컨텍스트]에 직접 근거하면 PASS\n"
+    "- 컨텍스트에 없는 사실·날짜·발언자 발언을 단정하면 FAIL\n"
+    "- 컨텍스트의 내용을 합리적으로 요약·종합한 경우는 PASS\n"
+    "- 반드시 첫 줄에 PASS 또는 FAIL 중 하나만 출력한다.\n"
+    "- FAIL이면 둘째 줄에 문제가 되는 주장을 한 문장으로 요약한다.\n"
+    "- 설명, 부연, 추천 수정안은 출력하지 않는다."
+)
+
+_WARN_HALLUCINATION = (
+    "\n\n*⚠ AI 자기검증: 일부 주장이 검색된 회의록 범위를 벗어날 수 있습니다. "
+    "아래 참고 자료를 직접 확인하세요.*"
+)
+
+
+def llm_self_verify(answer: str, docs: list[dict]) -> tuple[bool, str]:
+    """LLM이 답변이 컨텍스트에 충실한지 검증.
+
+    Returns:
+        (is_faithful, warning) — is_faithful=False이면 warning을 답변에 추가 권장.
+    """
+    try:
+        from service.llm.llm_client import chat
+    except Exception:
+        return True, ""
+
+    if not answer.strip() or not docs:
+        return True, ""
+
+    context_lines: list[str] = []
+    for i, doc in enumerate(docs[:5], start=1):
+        text = (doc.get("chunk_text") or "").strip()[:300]
+        speaker = doc.get("speaker") or ""
+        if text:
+            context_lines.append(f"[{i}] {speaker}: {text}")
+    if not context_lines:
+        return True, ""
+
+    context_str = "\n".join(context_lines)
+    answer_body = answer[:1200]
+
+    user_msg = f"[컨텍스트]\n{context_str}\n\n[답변]\n{answer_body}"
+
+    try:
+        result = chat(system=_VERIFY_SYSTEM, user=user_msg, max_tokens=80)
+        first_line = (result or "").strip().splitlines()[0].strip().upper()
+        is_faithful = not first_line.startswith("FAIL")
+        warning = "" if is_faithful else _WARN_HALLUCINATION
+        logger.info("[SelfVerify] result=%s", first_line[:20])
+        return is_faithful, warning
+    except Exception as exc:
+        logger.warning("[SelfVerify] LLM 호출 실패, 검증 생략: %s", exc)
+        return True, ""
 
 
 # ── 노드 진입점 ───────────────────────────────────────────────────

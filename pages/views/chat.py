@@ -680,6 +680,7 @@ def _handle_user_input(user_input: str) -> None:
                 _WARN_NONE,
                 _WARN_SPEAKER_MISMATCH,
                 _REFUSAL_WEAK,
+                llm_self_verify,
             )
             # 기준 5: 약한 검색 결과면 스트리밍 전에 거부
             if _is_weak_retrieval(docs):
@@ -733,6 +734,11 @@ def _handle_user_input(user_input: str) -> None:
                 clean_text, _ = _remove_unlabeled_detail_section(clean_text)
 
                 clean_text = _prepare_answer_body(clean_text)
+
+                # LLM 자기검증: 컨텍스트 밖 주장 탐지
+                _faithful, _verify_warn = llm_self_verify(clean_text, docs)
+                if not _faithful:
+                    clean_text = clean_text.rstrip() + _verify_warn
 
                 # 기준 4: 미인용 문장 → ## 확인된 범위로 이동
                 # _pre_normalize: 헤더+본문 같은 줄 → 분리 후 점수 계산
