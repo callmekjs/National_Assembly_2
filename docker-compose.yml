@@ -9,9 +9,9 @@ services:
       POSTGRES_PASSWORD: ${PG_PASSWORD:-post1234}
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C.UTF-8 --auth-host=scram-sha-256"
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - SKN3rd_network
     restart: unless-stopped

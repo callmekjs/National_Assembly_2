@@ -6,6 +6,45 @@
 
 ---
 
+## [BGE-M3 하이브리드 검색 + React 프론트엔드] 2026-06-24
+
+### Added
+- **BGE-M3 임베딩 모델 전환** (`service/rag/models/bge_m3.py`): `BAAI/bge-m3` (FlagEmbedding) 싱글톤 로더
+  - `multilingual-e5-large` → BGE-M3 전환: 한국어 정치/법률 도메인 Dense 검색 강화
+  - Dense(1024-dim cosine) + Sparse(내장 Lexical Weight) 동시 지원
+  - RTX 5070 Blackwell GPU: CUDA 12.8 (`cu128`) 자동 감지, `use_fp16=True`
+- **BGE-M3 Sparse 인메모리 인덱스** (`service/rag/retrieval/sparse_index.py`): PostgreSQL FTS(한국어 형태소 분석 불가) 대체
+  - `{token: [(chunk_id, weight), ...]}` 역인덱스, 서버 기동 시 DB에서 빌드
+  - `search(query_weights, top_k)`: dot-product 스코어링
+- **True Hybrid Search** (`service/rag/retrieval/retriever.py`): `search_v2()` 개선
+  - Dense top-50 + BGE-M3 Sparse top-50 → RRF(k=60) → top_k
+  - Sparse 미빌드 시 FTS로 자동 폴백
+- **`sparse_weights JSONB` 컬럼** (`service/etl/loader/schema_v2.sql`): `embeddings_e5_v2` 테이블에 추가
+- **React 프론트엔드** (`frontend/`): Vite + React 채팅 UI
+  - 다크 테마 채팅 인터페이스 (말풍선, 로딩 애니메이션)
+  - 참고자료 테이블 (회의일·발언자·내용·근거레벨 배지)
+  - Enter 전송 / Shift+Enter 줄바꿈
+  - FastAPI `http://localhost:8000` 연동
+- **FastAPI CORS** (`api/main.py`): React(`:5173`) → FastAPI(`:8000`) 크로스오리진 허용
+- **답변 형식 개선** (`service/llm/prompt_templates.py`): `## 확인된 범위` 조건부 출력 섹션 추가
+  - `## 한계` 기본 출력 금지
+  - 직접 발언 없음·발언자 미상·비교 질문 한쪽 누락 시에만 표시
+
+### Fixed
+- **참고자료 회의일 형식 불일치** (`pages/views/chat.py`): raw 날짜 문자열 그대로 표시 → `_parse_meeting_iso()` 정규화
+  - `YYYY-MM-DD` / `YYYY.MM.DD` / `YYYY/MM/DD` / `YYYYMMDD` / datetime 문자열 모두 처리
+  - 통일 표시 형식: `YYYY-MM-DD`
+- **float32 JSON 직렬화 오류** (`service/rag/models/bge_m3.py`): `_to_float_dict()` — numpy `float32` → Python `float` 변환
+- **DB 포트 미적용 버그** (`service/etl/loader/embeddings_v2.py`): `EmbeddingEncoder` 제거 후 `load_dotenv()` 누락 → 명시적 로드로 수정
+
+### Changed
+- **전체 13,255 청크 재임베딩 완료**: BGE-M3 dense + sparse, batch_size=64, RTX 5070 GPU 사용
+- **`graph/nodes/retrieve_pg.py`**: `MULTILINGUAL_E5_LARGE` → `BGE_M3`
+- **`requirements.txt`**: `FlagEmbedding>=1.2.0` 추가
+- **FastAPI `/query`**: `use_v2_retrieval: True` 고정, v2 테이블(`chunks_v2`, `embeddings_e5_v2`) 사용
+
+---
+
 ## [발언자 메타 고도화 · LLM 컨텍스트 버그 수정] 2026-06-24
 
 ### Added

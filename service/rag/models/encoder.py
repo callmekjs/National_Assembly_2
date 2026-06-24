@@ -75,31 +75,18 @@ class EmbeddingEncoder:
             return text
 
     def encode_query(self, query: str) -> List[float]:
-        """
-        쿼리 인코딩 (단일)
-
-        Args:
-            query: 검색 쿼리
-
-        Returns:
-            쿼리 벡터
-        """
         if not query.strip():
             logger.warning("Empty query provided")
             return [0.0] * self.config.dimension
 
         try:
-            # SentenceTransformer 사용
-            if isinstance(self.model, SentenceTransformer):
-                return self._encode_with_sentence_transformer(
-                    [query], is_query=True
-                )[0]
-            # Transformers 사용
+            if self.model_type == EmbeddingModelType.BGE_M3:
+                from service.rag.models.bge_m3 import encode_dense
+                return encode_dense([query], batch_size=1)[0]
+            elif isinstance(self.model, SentenceTransformer):
+                return self._encode_with_sentence_transformer([query], is_query=True)[0]
             else:
-                return self._encode_with_transformers(
-                    [query], is_query=True
-                )[0]
-
+                return self._encode_with_transformers([query], is_query=True)[0]
         except Exception as e:
             logger.error(f"Query encoding failed: {e}", exc_info=True)
             return [0.0] * self.config.dimension
@@ -130,23 +117,17 @@ class EmbeddingEncoder:
             batch_size = self.config.batch_size
 
         try:
-            # SentenceTransformer 사용
-            if isinstance(self.model, SentenceTransformer):
+            if self.model_type == EmbeddingModelType.BGE_M3:
+                from service.rag.models.bge_m3 import encode_dense
+                return encode_dense(texts, batch_size=batch_size or self.config.batch_size)
+            elif isinstance(self.model, SentenceTransformer):
                 return self._encode_with_sentence_transformer(
-                    texts, 
-                    is_query=False,
-                    batch_size=batch_size,
-                    show_progress=show_progress
+                    texts, is_query=False, batch_size=batch_size, show_progress=show_progress
                 )
-            # Transformers 사용
             else:
                 return self._encode_with_transformers(
-                    texts,
-                    is_query=False,
-                    batch_size=batch_size,
-                    show_progress=show_progress
+                    texts, is_query=False, batch_size=batch_size, show_progress=show_progress
                 )
-
         except Exception as e:
             logger.error(f"Document encoding failed: {e}", exc_info=True)
             return [[0.0] * self.config.dimension] * len(texts)

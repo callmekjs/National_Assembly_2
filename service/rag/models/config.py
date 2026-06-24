@@ -8,6 +8,7 @@ from typing import Any
 class EmbeddingModelType(str, Enum):
     MULTILINGUAL_E5_SMALL = "intfloat/multilingual-e5-small"
     MULTILINGUAL_E5_LARGE = "intfloat/multilingual-e5-large"
+    BGE_M3 = "BAAI/bge-m3"
 
 
 @dataclass
@@ -48,7 +49,19 @@ MODEL_CONFIGS: dict[EmbeddingModelType, ModelConfig] = {
         pooling_mode="mean",
         trust_remote_code=False,
         extra_params={"query_prefix": "query: ", "passage_prefix": "passage: ", "torch_dtype": "float32"},
-        notes="고품질 범용 임베딩 모델 (384→768차원)",
+        notes="고품질 범용 임베딩 모델",
+    ),
+    EmbeddingModelType.BGE_M3: ModelConfig(
+        model_name="BAAI/bge-m3",
+        display_name="BGE-M3",
+        dimension=1024,
+        max_seq_length=8192,
+        batch_size=12,
+        normalize_embeddings=True,
+        pooling_mode="cls",
+        trust_remote_code=False,
+        extra_params={},
+        notes="최강 다국어 임베딩, Dense+Sparse 지원, 한국어 정치/법률 도메인 강함",
     ),
 }
 

@@ -28,12 +28,20 @@ from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="국회 회의록 RAG API",
     description="외교통일위원회 회의록 기반 근거 인용 질의응답",
     version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -100,16 +108,17 @@ def startup():
 
 @app.get("/health", summary="헬스 체크")
 def health():
-    """DB 연결 상태와 청크 수를 반환합니다."""
+    """DB 연결 상태와 v2 청크·임베딩 수를 반환합니다."""
     try:
         with _db_conn() as conn, conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM chunks")
+            cur.execute("SELECT COUNT(*) FROM chunks_v2")
             chunk_count = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM embeddings_e5")
+            cur.execute("SELECT COUNT(*) FROM embeddings_e5_v2")
             embed_count = cur.fetchone()[0]
         return {
             "status": "ok",
             "db": "ok",
+            "schema": "v2",
             "chunks": chunk_count,
             "embeddings": embed_count,
         }
@@ -140,6 +149,7 @@ def query(req: QueryRequest):
         "committee": req.committee or "외교통일위원회",
         "use_fusion": req.use_fusion,
         "use_neural_reranker": req.use_neural_reranker,
+        "use_v2_retrieval": True,
     }
 
     t_retrieve_start: Optional[float] = None
@@ -213,8 +223,9 @@ def meetings():
         metadata->>'committee'    AS committee,
         metadata->>'meeting_date' AS meeting_date,
         COUNT(*)                  AS doc_count
-    FROM chunks
-    WHERE metadata->>'committee' IS NOT NULL
+    FROM chunks_v2
+    WHERE section_type = 'body'
+      AND metadata->>'committee' IS NOT NULL
       AND metadata->>'meeting_date' IS NOT NULL
     GROUP BY 1, 2
     ORDER BY 2 DESC, 1

@@ -49,10 +49,11 @@ CREATE INDEX IF NOT EXISTS idx_chunks_v2_fts
 -- embeddings_e5_v2: embed_text 기반 임베딩 (section_type=body만)
 -- ─────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS embeddings_e5_v2 (
-    id          SERIAL PRIMARY KEY,
-    chunk_id    VARCHAR(255) REFERENCES chunks_v2(chunk_id) ON DELETE CASCADE,
-    embedding   vector(1024) NOT NULL,
-    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    id              SERIAL PRIMARY KEY,
+    chunk_id        VARCHAR(255) REFERENCES chunks_v2(chunk_id) ON DELETE CASCADE,
+    embedding       vector(1024) NOT NULL,
+    sparse_weights  JSONB,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(chunk_id)
 );
 

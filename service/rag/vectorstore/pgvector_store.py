@@ -203,6 +203,41 @@ class PgVectorStore:
         ]
 
 
+    def fetch_chunks_by_ids(
+        self,
+        chunk_ids: list[str],
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        """chunk_id 목록으로 chunks_v2 데이터를 조회 (sparse search 결과 enrichment용)."""
+        if not chunk_ids:
+            return []
+        placeholders = ",".join(["%s"] * len(chunk_ids))
+        where, filter_params = _build_v2_filter_where(filters)
+        sql = f"""
+        SELECT c.chunk_id, c.source_id, c.clean_text,
+               0.0 AS sim, c.metadata, c.speaker, c.speaker_role
+        FROM chunks_v2 c
+        WHERE {where}
+          AND c.chunk_id IN ({placeholders})
+        """
+        params = filter_params + list(chunk_ids)
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [
+            SearchResult(
+                chunk_id=row[0],
+                source_id=row[1] or "",
+                content=row[2] or "",
+                similarity=float(row[3] or 0.0),
+                metadata=row[4] or {},
+                speaker=row[5] or "",
+                speaker_role=row[6] or "",
+            )
+            for row in rows
+        ]
+
+
 def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     """chunks_v2 검색용 WHERE 절 생성. 첫 항목은 항상 section_type='body'."""
     parts: list[str] = ["c.section_type = 'body'"]

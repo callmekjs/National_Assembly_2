@@ -1,21 +1,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
 import psycopg2
+from dotenv import load_dotenv
 from pgvector.psycopg2 import register_vector
 
+load_dotenv(Path(__file__).resolve().parents[3] / ".env", override=True)
+
 from service.rag.models.config import EmbeddingModelType
-from service.rag.models.encoder import EmbeddingEncoder
 
 ROOT = Path(__file__).resolve().parents[3]
 
 UPSERT_SQL = """
-INSERT INTO embeddings_e5_v2 (chunk_id, embedding)
-VALUES (%s, %s)
-ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding
+INSERT INTO embeddings_e5_v2 (chunk_id, embedding, sparse_weights)
+VALUES (%s, %s, %s)
+ON CONFLICT (chunk_id) DO UPDATE
+    SET embedding = EXCLUDED.embedding,
+        sparse_weights = EXCLUDED.sparse_weights
 """
 
 
@@ -71,12 +76,13 @@ def _build_iter_sql(skip_existing: bool, limit: int | None) -> str:
 
 def run(
     limit: int | None = None,
-    batch_size: int = 100,
+    batch_size: int = 32,
     force: bool = False,
 ) -> dict:
     """embed_text 임베딩 실행. 반환값: {"embedded": int, "skipped": int}"""
+    from service.rag.models.bge_m3 import encode_both
     conn = _connect()
-    encoder = EmbeddingEncoder(EmbeddingModelType.MULTILINGUAL_E5_LARGE)
+    _encode_fn = encode_both
 
     skip_existing = not force
     with conn.cursor() as cur:
@@ -109,12 +115,12 @@ def run(
                 for row in rows:
                     batch.append(_parse_db_row(row))
                     if len(batch) >= batch_size:
-                        _flush(batch, encoder, conn, batch_num := batch_num + 1)
+                        _flush(batch, _encode_fn, conn, batch_num := batch_num + 1)
                         processed += len(batch)
                         batch = []
 
         if batch:
-            _flush(batch, encoder, conn, batch_num + 1)
+            _flush(batch, _encode_fn, conn, batch_num + 1)
             processed += len(batch)
     finally:
         conn.close()
@@ -125,18 +131,19 @@ def run(
 
 def _flush(
     batch: list[dict],
-    encoder: EmbeddingEncoder,
+    encode_fn,
     conn: psycopg2.extensions.connection,
     batch_num: int,
 ) -> None:
     chunk_ids = [c["chunk_id"] for c in batch]
     texts = [c["embed_text"] for c in batch]
-    vectors = encoder.encode_documents(texts, batch_size=len(texts))
-    if len(vectors) != len(chunk_ids):
+    dense_vecs, sparse_weights = encode_fn(texts, batch_size=len(texts))
+    if len(dense_vecs) != len(chunk_ids):
         raise RuntimeError(
-            f"[embed_v2] encoder returned {len(vectors)} vectors for {len(chunk_ids)} chunks"
+            f"[embed_v2] encoder returned {len(dense_vecs)} vectors for {len(chunk_ids)} chunks"
         )
-    rows = list(zip(chunk_ids, vectors))
+    rows = [(cid, vec, json.dumps(sw, ensure_ascii=False))
+            for cid, vec, sw in zip(chunk_ids, dense_vecs, sparse_weights)]
     with conn.cursor() as cur:
         cur.executemany(UPSERT_SQL, rows)
     conn.commit()

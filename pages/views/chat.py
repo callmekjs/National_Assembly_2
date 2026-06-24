@@ -841,13 +841,25 @@ def _llm_setup_banner() -> None:
 
 
 def _parse_meeting_iso(d: str) -> date | None:
-    s = (d or "").strip()[:10]
-    if len(s) < 10:
-        return None
-    try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
-    except ValueError:
-        return None
+    s = (d or "").strip()
+    for fmt, length in (
+        ("%Y-%m-%d", 10),
+        ("%Y.%m.%d", 10),
+        ("%Y/%m/%d", 10),
+        ("%Y%m%d",   8),
+    ):
+        try:
+            return datetime.strptime(s[:length], fmt).date()
+        except ValueError:
+            continue
+    # 날짜 포함 긴 문자열 (예: 2024-07-17T00:00:00)
+    m = re.search(r"(\d{4})[-./](\d{2})[-./](\d{2})", s)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            pass
+    return None
 
 
 def _summary_for_display(quote: str, item: dict, max_len: int = 160) -> str:
@@ -925,7 +937,9 @@ def _render_references_table(citations: list[dict], used_indices: set[int] | Non
         if used_indices is not None and idx not in used_indices:
             continue
         speaker = _citation_speaker_label(item)
-        date_disp = item.get("date") or item.get("meeting_date") or "—"
+        raw_date = item.get("date") or item.get("meeting_date") or ""
+        _parsed_d = _parse_meeting_iso(raw_date)
+        date_disp = _parsed_d.isoformat() if _parsed_d else (raw_date.strip() or "—")
         quote = (item.get("quote") or "").strip()
         summary = _summary_for_display(quote, item)
         url = (item.get("url") or "").strip()
