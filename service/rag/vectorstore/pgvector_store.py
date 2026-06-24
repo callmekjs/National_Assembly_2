@@ -128,3 +128,94 @@ class PgVectorStore:
                     break
                 for row in batch:
                     yield {"id": row[0], "chunk_id": row[1], "natural_text": row[2], "metadata": row[3] or {}}
+
+    def search_similar_v2(
+        self,
+        query_embedding: list[float],
+        top_k: int = 50,
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        """embeddings_e5_v2 + chunks_v2 기반 벡터 검색."""
+        where, filter_params = _build_v2_filter_where(filters)
+        sql = f"""
+        SELECT c.chunk_id, c.source_id, c.clean_text,
+               1 - (e.embedding <=> %s::vector) AS sim, c.metadata
+        FROM embeddings_e5_v2 e
+        JOIN chunks_v2 c ON c.chunk_id = e.chunk_id
+        WHERE {where}
+        ORDER BY e.embedding <=> %s::vector
+        LIMIT %s
+        """
+        params = [query_embedding] + filter_params + [query_embedding, top_k]
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [
+            SearchResult(
+                chunk_id=row[0],
+                source_id=row[1] or "",
+                content=row[2] or "",
+                similarity=float(row[3] or 0.0),
+                metadata=row[4] or {},
+            )
+            for row in rows
+        ]
+
+    def search_keyword_v2(
+        self,
+        query_text: str,
+        top_k: int = 50,
+        filters: dict | None = None,
+    ) -> list[SearchResult]:
+        """chunks_v2.clean_text PostgreSQL FTS 검색."""
+        where, filter_params = _build_v2_filter_where(filters)
+        sql = f"""
+        SELECT c.chunk_id, c.source_id, c.clean_text,
+               ts_rank(to_tsvector('simple', c.clean_text),
+                       plainto_tsquery('simple', %s)) AS rank,
+               c.metadata
+        FROM chunks_v2 c
+        WHERE {where}
+          AND to_tsvector('simple', c.clean_text) @@ plainto_tsquery('simple', %s)
+        ORDER BY rank DESC
+        LIMIT %s
+        """
+        params = [query_text] + filter_params + [query_text, top_k]
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
+            rows = cur.fetchall()
+        return [
+            SearchResult(
+                chunk_id=row[0],
+                source_id=row[1] or "",
+                content=row[2] or "",
+                similarity=float(row[3] or 0.0),
+                metadata=row[4] or {},
+            )
+            for row in rows
+        ]
+
+
+def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
+    """chunks_v2 검색용 WHERE 절 생성. 첫 항목은 항상 section_type='body'."""
+    parts: list[str] = ["c.section_type = 'body'"]
+    params: list = []
+    if not filters:
+        return " AND ".join(parts), params
+    committee = str(filters.get("committee") or "").strip()
+    date_from = str(filters.get("date_from") or "").strip()
+    date_to = str(filters.get("date_to") or "").strip()
+    speaker = str(filters.get("speaker") or "").strip()
+    if committee:
+        parts.append("COALESCE(c.metadata->>'committee', '') = %s")
+        params.append(committee)
+    if date_from:
+        parts.append("COALESCE(c.metadata->>'meeting_date', '') >= %s")
+        params.append(date_from)
+    if date_to:
+        parts.append("COALESCE(c.metadata->>'meeting_date', '') <= %s")
+        params.append(date_to)
+    if speaker:
+        parts.append("COALESCE(c.speaker, '') LIKE %s")
+        params.append(f"%{speaker}%")
+    return " AND ".join(parts), params
