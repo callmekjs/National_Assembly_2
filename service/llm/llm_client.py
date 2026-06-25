@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Dict, Generator
 
+import time
+
 import requests
 from dotenv import load_dotenv
 
@@ -170,9 +172,22 @@ def _apply_chat_template_safe(tokenizer, messages):
         return tokenizer(prompt, return_tensors="pt").input_ids
 
 
+def _wait_for_rate_limit(resp: requests.Response, attempt: int) -> float:
+    """429 응답에서 대기 시간(초) 계산. Retry-After 헤더 우선, 없으면 지수 백오프."""
+    retry_after = resp.headers.get("Retry-After") or resp.headers.get("x-ratelimit-reset-requests")
+    if retry_after:
+        try:
+            return float(retry_after)
+        except ValueError:
+            pass
+    return min(5 * (2 ** (attempt - 1)), 60)
+
+
 def _stream_openai(
     system: str, user: str, max_tokens: int,
     history: list[dict] | None = None,
+    max_retries: int = 4,
+    model: str | None = None,
 ) -> Generator[str, None, None]:
     api_key = _openai_key()
     if not api_key:
@@ -180,7 +195,7 @@ def _stream_openai(
 
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
     messages = [{"role": "system", "content": system.strip()}]
     if history:
         messages.extend(history)
@@ -196,35 +211,43 @@ def _stream_openai(
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    with requests.post(
-        url, headers=headers, data=json.dumps(payload, ensure_ascii=False),
-        timeout=120, stream=True
-    ) as resp:
-        resp.raise_for_status()
-        for raw in resp.iter_lines():
-            if not raw:
+    for attempt in range(1, max_retries + 1):
+        with requests.post(
+            url, headers=headers, data=json.dumps(payload, ensure_ascii=False),
+            timeout=120, stream=True
+        ) as resp:
+            if resp.status_code == 429:
+                wait = _wait_for_rate_limit(resp, attempt)
+                print(f"[LLM] 429 rate limit (stream), {wait:.0f}s 대기 후 재시도 ({attempt}/{max_retries})", file=sys.stderr)
+                time.sleep(wait)
                 continue
-            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
-            if not line.startswith("data: "):
-                continue
-            data = line[6:]
-            if data.strip() == "[DONE]":
-                break
-            try:
-                obj = json.loads(data)
-                # 마지막 usage 청크 (choices가 비어 있고 usage 있음)
-                if obj.get("usage"):
-                    usage = obj["usage"]
-                    _last_usage.update({
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                        "total_tokens": usage.get("total_tokens", 0),
-                    })
-                delta = obj["choices"][0]["delta"].get("content", "") if obj.get("choices") else ""
-                if delta:
-                    yield delta
-            except (json.JSONDecodeError, KeyError, IndexError):
-                continue
+            resp.raise_for_status()
+            for raw in resp.iter_lines():
+                if not raw:
+                    continue
+                line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data.strip() == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                    # 마지막 usage 청크 (choices가 비어 있고 usage 있음)
+                    if obj.get("usage"):
+                        usage = obj["usage"]
+                        _last_usage.update({
+                            "prompt_tokens": usage.get("prompt_tokens", 0),
+                            "completion_tokens": usage.get("completion_tokens", 0),
+                            "total_tokens": usage.get("total_tokens", 0),
+                        })
+                    delta = obj["choices"][0]["delta"].get("content", "") if obj.get("choices") else ""
+                    if delta:
+                        yield delta
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    continue
+            return  # 성공, 스트림 종료
+    raise RuntimeError(f"OpenAI 429 rate limit (stream): {max_retries}회 재시도 모두 실패")
 
 
 def chat_stream(
@@ -270,6 +293,8 @@ def chat_stream(
 def _chat_openai(
     system: str, user: str, max_tokens: int,
     history: list[dict] | None = None,
+    model: str | None = None,
+    max_retries: int = 4,
 ) -> str:
     api_key = _openai_key()
     if not api_key:
@@ -277,7 +302,7 @@ def _chat_openai(
 
     base = (os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     url = f"{base}/chat/completions"
-    model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    model = model or os.getenv("OPENAI_MODEL", "gpt-4o")
     messages = [{"role": "system", "content": system.strip()}]
     if history:
         messages.extend(history)
@@ -290,16 +315,25 @@ def _chat_openai(
         "seed": int(os.getenv("OPENAI_SEED", "42")),
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
-    resp.raise_for_status()
-    data = resp.json()
-    usage = data.get("usage") or {}
-    _last_usage.update({
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-        "total_tokens": usage.get("total_tokens", 0),
-    })
-    return str(data["choices"][0]["message"]["content"]).strip()
+
+    for attempt in range(1, max_retries + 1):
+        resp = requests.post(url, headers=headers, data=json.dumps(payload, ensure_ascii=False), timeout=120)
+        if resp.status_code == 429:
+            wait = _wait_for_rate_limit(resp, attempt)
+            print(f"[LLM] 429 rate limit, {wait:.0f}s 대기 후 재시도 ({attempt}/{max_retries})", file=sys.stderr)
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+        usage = data.get("usage") or {}
+        _last_usage.update({
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        })
+        return str(data["choices"][0]["message"]["content"]).strip()
+
+    raise RuntimeError(f"OpenAI 429 rate limit: {max_retries}회 재시도 모두 실패")
 
 
 def _chat_local_hf(
@@ -372,6 +406,7 @@ def llm_env_probe() -> tuple[bool, str]:
 def chat(
     system: str, user: str, max_tokens: int = 512,
     history: list[dict] | None = None,
+    model: str | None = None,
 ) -> str:
     """캐시 hit 시 즉시 반환. miss 시 OpenAI → 로컬 HF 순으로 시도."""
     key = _cache_key(system, user, history)
@@ -382,8 +417,8 @@ def chat(
     result: str
     if _use_openai():
         try:
-            print("[LLM] backend=openai model=", os.getenv("OPENAI_MODEL", "gpt-4o"), file=sys.stderr)
-            result = _chat_openai(system, user, max_tokens, history=history)
+            print("[LLM] backend=openai model=", model or os.getenv("OPENAI_MODEL", "gpt-4o"), file=sys.stderr)
+            result = _chat_openai(system, user, max_tokens, history=history, model=model)
         except Exception as exc:
             print(f"[LLM] OpenAI 실패: {exc}", file=sys.stderr)
             if (os.getenv("OPENAI_ONLY") or "").lower() in ("1", "true", "yes"):

@@ -115,9 +115,11 @@ def _build_chunk_with_context(doc: dict) -> str:
 
 def run(state: QAState) -> QAState:
     docs = state.get("reranked") or state.get("retrieved", [])
-    state["context"] = "\n\n".join(_build_chunk_with_context(d) for d in docs[:8])[:12000]
+    top_k = int((state.get("meta") or {}).get("top_k", 4))
+    chunks = [f"[{i}]\n{_build_chunk_with_context(d)}" for i, d in enumerate(docs[:top_k], start=1)]
+    state["context"] = "\n\n".join(chunks)[:7000]
     state["citations"] = []
-    for d in docs[:8]:
+    for d in docs[:top_k]:
         meta = d.get("metadata") or {}
         state["citations"].append(
             {
@@ -134,6 +136,7 @@ def run(state: QAState) -> QAState:
                 "chunk_text": (d.get("chunk_text") or "").strip(),
                 "source_path": str(meta.get("source_path") or "").strip(),
                 "committee": str(meta.get("committee") or "").strip(),
+                "page_no": meta.get("page_no"),
             }
         )
     return state

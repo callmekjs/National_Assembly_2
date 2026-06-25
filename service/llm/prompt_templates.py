@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import re as _re
 from datetime import date
+
+from service.rag.query.question_types import get_question_type_spec
 
 # 고정 페르소나(항상 이 문장으로 시작하는 톤을 유지)
 PERSONA_OPENING = (
@@ -173,6 +176,21 @@ RULES_GROUNDING = """
   `## 메인 결과`에 "해당 문서는 회의록에서 확인되지 않았습니다"라고만 쓰고 `## 세부 근거`는 작성하지 않는다.
 - **절대 금지**: [컨텍스트]의 관련 발언들을 조합하여 마치 해당 문서의 내용인 것처럼 재구성하는 것.
   (예: "2025 로드맵의 5개 방향은 …" 같은 문서 내용 날조 — 설령 [n] 인용이 붙어 있어도 금지)
+
+(8) 허위 전제 및 소관 외 질문 처리 [최우선 적용 — (7)과 동급]
+
+▶ 발언·사실 존재 여부를 묻는 질문 ("~발언한 내용이 있나요?", "~논의된 적이 있나요?", "~했다고 말했나요?"):
+- 해당 발언·사실이 [컨텍스트]에 **그 내용 그대로** 직접 확인되지 않으면:
+  `## 메인 결과`에 "회의록에서 해당 내용은 확인되지 않았습니다"만 적고, `## 세부 근거`는 작성하지 않는다.
+- **절대 금지**: 질문의 전제를 검증하지 못했는데 관련 다른 발언을 끌어와 `## 세부 근거`를 채우는 것.
+  (예: "사드 철회 발언은 없지만 ODA 발언이 있었다" → 이 ODA 내용을 세부 근거에 쓰는 것 금지)
+- `## 세부 근거`와 `## 확인된 범위`를 동시에 쓰면서 서로 모순되는 답변을 만들지 않는다.
+  ("확인되지 않았다"고 하면서 세부 근거를 채우는 것은 모순이며 금지한다.)
+
+▶ 질문 주제가 외교통일위원회 소관이 아닌 경우 (예: 국민연금, 조세정책, 국방예산, 검찰개혁 등):
+- [컨텍스트]에 유사 키워드가 포함된 청크가 있어도, 그 발언이 질문 주제와 직접 관련이 없으면 답변을 거절한다.
+- `## 메인 결과`에 "외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다"만 적고, `## 세부 근거`는 작성하지 않는다.
+- **절대 금지**: 소관 외 주제를 질문받았을 때 표면적으로 유사한 키워드(예: "연금", "예산")가 포함된 청크를 끌어와 답변을 구성하는 것.
 """
 
 RULES_CORE = (
@@ -278,6 +296,20 @@ FEW_SHOT_EXAMPLES = """
 """
 
 
+QUESTION_TYPE_PROMPT_GUIDE: dict[str, str] = {
+    "topic_search": "관련 발언을 주제별로 묶고, 발언자·회의일이 다른 근거를 우선 활용한다.",
+    "speaker_search": "질문 대상 발언자의 직접 발언만 입장 근거로 삼고, 타인 언급은 별도 한계로 구분한다.",
+    "meeting_summary": "회의의 흐름, 주요 안건, 반복 쟁점을 먼저 잡고 세부 발언은 대표 근거만 인용한다.",
+    "qa_pair_extract": "위원 질의와 기관·정부 답변을 가능한 한 쌍으로 맞춰 정리한다.",
+    "issue_extract": "반복적으로 제기된 쟁점·우려·비판·대책 요구를 항목별로 정리한다.",
+    "question_draft": "회의록 근거에서 후속 질의로 발전시킬 만한 질문 초안을 작성하되, 근거 없는 질문은 만들지 않는다.",
+    "agency_answer_tracking": "기관·부처 답변, 후속 조치, 자료 제출, 검토·추진 표현을 중심으로 정리한다.",
+    "comparison": "비교 대상별 직접 발언을 분리하고, 시점·주체·정당 차이를 섞지 않는다.",
+    "source_check": "답변보다 원문 근거 확인을 우선하고, 회의일·발언자·페이지 정보를 정확히 제시한다.",
+    "report_generation": "보고서/브리핑 형식으로 구조화하되, 모든 핵심 주장에는 회의록 인용을 붙인다.",
+}
+
+
 def _focus_index(question: str) -> int:
     q = (question or "").strip()
     if not q:
@@ -286,7 +318,7 @@ def _focus_index(question: str) -> int:
     return h % len(FOCUS_VARIANTS)
 
 
-def build_system_prompt(question: str = "", committee: str = "") -> str:
+def build_system_prompt(question: str = "", committee: str = "", question_type: str = "") -> str:
     """단일 최상 품질 모드. 질문별로 강조 관점, 위원회별로 도메인 컨텍스트가 바뀐다."""
     focus = FOCUS_VARIANTS[_focus_index(question)]
     parts = [PERSONA_OPENING, ""]
@@ -294,6 +326,11 @@ def build_system_prompt(question: str = "", committee: str = "") -> str:
     domain = COMMITTEE_DOMAIN.get((committee or "").strip())
     if domain:
         parts += [f"[도메인 컨텍스트]\n{domain}", ""]
+
+    if question_type:
+        spec = get_question_type_spec(question_type)
+        guide = QUESTION_TYPE_PROMPT_GUIDE.get(spec.id, "")
+        parts += [f"[질문 유형 라우팅]\n이번 질문 유형: {spec.label}\n{guide}", ""]
 
     parts += [
         PARTY_CONTEXT.strip(),
@@ -324,19 +361,79 @@ _DOC_NAME_WARNING = (
     "  - `## 세부 근거`: 작성하지 않음 (관련 발언이 있어도 문서 내용으로 재구성 금지)\n"
 )
 
+_EXISTENCE_WARNING = (
+    "\n\n⚠⚠⚠ [존재 확인 질문 — 즉시 적용 필수]\n"
+    "이 질문은 특정 발언·사실이 존재하는지 묻고 있습니다.\n"
+    "아래 [컨텍스트]를 확인하세요:\n"
+    "  → 질문이 전제하는 그 발언·사실이 **그 내용 그대로** 직접 존재하면: 일반 형식으로 답변\n"
+    "  → 존재하지 않으면: **아래 형식 외 일절 금지**\n"
+    "      `## 메인 결과`\n"
+    "      회의록에서 해당 내용은 확인되지 않았습니다.\n"
+    "      ← 이 한 문장만 작성하고 끝낸다\n"
+    "      `## 세부 근거` — 절대 작성 금지\n"
+    "      관련 발언이 컨텍스트에 있어도 전제가 없으면 세부 근거를 채우지 않는다\n"
+)
+
+_OUT_OF_SCOPE_WARNING = (
+    "\n\n⚠⚠⚠ [소관 외 주제 — 즉시 적용 필수]\n"
+    "이 질문의 주제는 외교통일위원회 소관이 아닙니다.\n"
+    "컨텍스트에 유사 키워드 청크가 있어도 무시하고 아래 형식만 허용:\n"
+    "      `## 메인 결과`\n"
+    "      외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다.\n"
+    "      ← 이 한 문장만 작성하고 끝낸다\n"
+    "      `## 세부 근거` — 절대 작성 금지\n"
+)
+
+_EXISTENCE_PATTERNS = [
+    r"한\s*내용이\s*있나요",       # "~한 내용이 있나요?"
+    r"발언한\s*내용이\s*있",       # "발언한 내용이 있나요?"
+    r"논의된\s*적이\s*있나요",     # "논의된 적이 있나요?"
+    r"한\s*적이\s*있나요",        # "~한 적이 있나요?"
+    r"주장한\s*적이\s*있나요",     # "주장한 적이 있나요?"
+    r"발언한\s*적이\s*있나요",     # "발언한 적이 있나요?"
+    r"말했나요",                  # "~라고 말했나요?"
+    r"있었나요",                  # "어떤 논의가 있었나요?" (기간 없는 경우)
+    r"있었습니까",
+]
+
+_OUT_OF_SCOPE_KEYWORDS = [
+    "국민연금", "조세정책", "검찰개혁", "국방예산", "교육예산",
+    "건강보험", "의료보험", "법인세", "소득세", "부동산세",
+]
+
+
+def _is_existence_query(question: str) -> bool:
+    return any(_re.search(p, question or "") for p in _EXISTENCE_PATTERNS)
+
+
+def _is_out_of_scope(question: str) -> bool:
+    return any(kw in (question or "") for kw in _OUT_OF_SCOPE_KEYWORDS)
+
+
+def needs_reasoning_model(question: str) -> bool:
+    """허위 전제·존재 확인·소관 외 판단이 필요한 질문은 추론 능력이 강한 모델이 필요."""
+    return _is_existence_query(question) or _is_out_of_scope(question)
+
 
 def build_user_prompt(
     question: str,
     context: str,
     reference_date: date | None = None,
     doc_name_query: bool = False,
+    question_type: str = "",
 ) -> str:
     """난이도 없이 항상 깊이 있는 구조를 요구한다."""
     ref = reference_date or date.today()
     doc_warn = _DOC_NAME_WARNING if doc_name_query else ""
+    existence_warn = _EXISTENCE_WARNING if _is_existence_query(question) else ""
+    scope_warn = _OUT_OF_SCOPE_WARNING if _is_out_of_scope(question) else ""
+    type_note = ""
+    if question_type:
+        spec = get_question_type_spec(question_type)
+        type_note = f"\n라우터 판단 질문 유형: {spec.label} ({spec.id})\n"
     return (
         f"질문 기준일: {ref.isoformat()}\n\n"
-        f"질문: {question}{doc_warn}\n\n"
+        f"질문: {question}{type_note}{doc_warn}{existence_warn}{scope_warn}\n\n"
         "【질문 유형 판단】\n"
         "A) **특정 인물 이름·직함**만 있고 ‘비교’·’여야’ 요청이 없으면 → **단일인 질문**\n"
         "   - `## 세부 근거` 불릿 주어는 그 사람만. 타인 불릿 0개.\n"
@@ -350,7 +447,13 @@ def build_user_prompt(
         "   ⚠ 각 주체의 불릿은 **그 주체가 직접 발화한 청크**(컨텍스트의 ‘발언자’ 필드)에서만 인용한다.\n"
         "   ⚠ 청크 [n]의 발언자가 주체 A인데 그것을 주체 B의 불릿에 붙이는 것은 **절대 금지**.\n"
         "   ⚠ 주체 A에 대해 제3자 또는 주체 B가 언급·비판한 내용을 ‘A의 입장’으로 쓰는 것은 **절대 금지**.\n"
-        "   ⚠ 주체 X의 **직접 발언 청크가 없으면** X의 불릿을 세부 근거에 만들지 말고 `## 메인 결과`에 ‘직접 발언 미확인’만 기재.\n\n"
+        "   ⚠ 주체 X의 **직접 발언 청크가 없으면** X의 불릿을 세부 근거에 만들지 말고 `## 메인 결과`에 ‘직접 발언 미확인’만 기재.\n"
+        "D) **존재·확인 여부 질문** (\"~있나요?\", \"~한 내용이 있나요?\", \"~한 적이 있나요?\") → **존재 검증 우선**\n"
+        "   ⚠ 답변 전 반드시 확인: [컨텍스트]에 해당 내용이 **그대로** 직접 존재하는가?\n"
+        "   - YES → 일반 형식으로 답변\n"
+        "   - NO  → `## 메인 결과`에 ‘회의록에서 해당 내용은 확인되지 않았습니다’만 작성, `## 세부 근거` **완전 금지**\n"
+        "E) **소관 외 주제** (국민연금·국방예산·조세·검찰개혁·교육 등) → 거절\n"
+        "   - `## 메인 결과`에 ‘외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다’만 작성\n\n"
         f"[컨텍스트]\n{context}\n\n"
         "서식(필수): 답변은 **Markdown**으로 작성한다.\n"
         "- 순서 고정: `## 메인 결과` → `## 세부 근거` → `## 확인된 범위`(조건부). `##` 형식 필수.\n"

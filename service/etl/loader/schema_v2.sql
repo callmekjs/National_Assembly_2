@@ -41,6 +41,23 @@ CREATE INDEX IF NOT EXISTS idx_chunks_v2_speaker
 CREATE INDEX IF NOT EXISTS idx_chunks_v2_section_type
     ON chunks_v2(section_type);
 
+-- 질문 유형 라우팅/유형별 검색 힌트
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_question_type_hints
+    ON chunks_v2 USING gin ((metadata->'question_type_hints'));
+
+-- 발화/소속/기관 기반 필터링
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_utterance_type
+    ON chunks_v2 ((metadata->>'utterance_type'));
+
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_party
+    ON chunks_v2 ((metadata->>'party'));
+
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_position_type
+    ON chunks_v2 ((metadata->>'position_type'));
+
+CREATE INDEX IF NOT EXISTS idx_chunks_v2_agency
+    ON chunks_v2 ((metadata->>'agency'));
+
 -- PostgreSQL FTS (한국어 기본 설정 simple 사용)
 CREATE INDEX IF NOT EXISTS idx_chunks_v2_fts
     ON chunks_v2 USING gin(to_tsvector('simple', clean_text));

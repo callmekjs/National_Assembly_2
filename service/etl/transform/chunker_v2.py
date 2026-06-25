@@ -3,6 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from service.rag.query.question_types import (
+    embed_hint_labels,
+    infer_agency,
+    infer_chunk_question_type_hints,
+    infer_utterance_type,
+)
+
 ROOT = Path(__file__).resolve().parents[3]
 TURNS_DIR = ROOT / "data" / "v2" / "transform" / "turns"
 CHUNKS_DIR = ROOT / "data" / "v2" / "transform" / "chunks"
@@ -35,6 +42,13 @@ def _load_speaker_table() -> dict[str, str]:
 
 
 _SPEAKER_TABLE: dict[str, str] = _load_speaker_table()
+
+_UTTERANCE_LABELS = {
+    "question": "질의",
+    "answer": "답변",
+    "statement": "발언",
+    "procedural": "회의진행",
+}
 
 
 def _enrich_speaker_metadata(meta: dict, speaker: str, speaker_role: str) -> None:
@@ -75,6 +89,22 @@ def _enrich_speaker_metadata(meta: dict, speaker: str, speaker_role: str) -> Non
     meta["position_type"] = "기타"
 
 
+def _enrich_question_type_metadata(meta: dict, text: str, speaker: str, speaker_role: str) -> None:
+    """질문 유형 라우팅과 유형별 검색에 쓰는 lightweight metadata를 추가한다."""
+    meta["agency"] = infer_agency(speaker_role, text)
+    meta["utterance_type"] = infer_utterance_type(
+        text,
+        speaker_role=speaker_role,
+        position_type=str(meta.get("position_type") or ""),
+    )
+    meta["question_type_hints"] = infer_chunk_question_type_hints(
+        text,
+        speaker=speaker,
+        speaker_role=speaker_role,
+        metadata=meta,
+    )
+
+
 def _count_tokens(text: str) -> int:
     """토큰 수 추정. tiktoken 미설치 시 글자 수 // 2로 폴백 (한국어 기준)."""
     try:
@@ -96,6 +126,9 @@ def _make_embed_text(turn: dict) -> str:
     role = turn.get("speaker_role", "")
     party = meta.get("party", "")
     position_type = meta.get("position_type", "")
+    utterance_type = meta.get("utterance_type", "")
+    agency = meta.get("agency", "")
+    hint_labels = embed_hint_labels(list(meta.get("question_type_hints") or []))
 
     speaker_label = f"{speaker} {role}".strip() if role else speaker
 
@@ -119,6 +152,12 @@ def _make_embed_text(turn: dict) -> str:
         parts.append(f"[위원회: {committee}]")
     if speaker_label:
         parts.append(f"[발언자: {speaker_label}]")
+    if utterance_type:
+        parts.append(f"[발화유형: {_UTTERANCE_LABELS.get(utterance_type, utterance_type)}]")
+    if agency:
+        parts.append(f"[기관: {agency}]")
+    if hint_labels:
+        parts.append(f"[검색힌트: {', '.join(hint_labels[:3])}]")
 
     prefix = " ".join(parts)
     body = turn.get("clean_text", "")
@@ -156,6 +195,7 @@ def _build_record(chunk: dict, source_id: str) -> dict:
     speaker = chunk.get("speaker", "")
     speaker_role = chunk.get("speaker_role", "")
     _enrich_speaker_metadata(meta, speaker, speaker_role)
+    _enrich_question_type_metadata(meta, text, speaker, speaker_role)
 
     # embed_text는 party/position_type이 채워진 meta로 생성
     enriched_chunk = {**chunk, "metadata": meta}

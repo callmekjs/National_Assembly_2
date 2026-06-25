@@ -54,7 +54,7 @@ _SKIP = re.compile(r"^(#{1,4}\s|>\s|\*[^*]|\s*$)")
 
 # 핵심 결론에서 "확인 불가" 판단 패턴
 _CONCLUSION_REFUSAL = re.compile(
-    r"확인되지 않|확인할 수 없|찾지 못했|찾을 수 없|확인되지 않았|없습니다\.$"
+    r"확인되지 않|확인할 수 없|찾지 못했|찾을 수 없|확인되지 않았"
 )
 
 # 발언자에서 직함·부처명 판단 (이름 추출 시 제외)
@@ -101,10 +101,10 @@ def _strip_detail_if_conclusion_refusal(ans: str) -> tuple[str, bool]:
     결론에 [n] 인용이 있으면 실제 데이터가 있는 것 → 세부 근거 유지.
     반환: (수정된 답변, 제거 여부)
     """
-    conclusion = _extract_conclusion_text(ans)
-    # 결론에 [n] 인용이 있으면 실제 데이터가 있는 것 → 세부 근거 유지
-    if conclusion and re.search(r"\[\d+\]", conclusion):
+    # 답변 어디에든 [n] 인용이 있으면 유효한 답변 → 세부 근거 유지
+    if re.search(r"\[\d+\]", ans):
         return ans, False
+    conclusion = _extract_conclusion_text(ans)
     # 결론 내용이 있고 거부 패턴도 없으면 → 유지
     if conclusion and not _CONCLUSION_REFUSAL.search(conclusion):
         return ans, False
@@ -250,8 +250,6 @@ def _validate_speaker_bullets(
 
         n = cites[0]
         chunk_speaker = _get_chunk_speaker(docs, n)
-        import sys as _sys
-        print(f"[DBG] bullet n={n} chunk_speaker='{chunk_speaker}' comp={comp} s='{s[:60]}'", file=_sys.stderr)
 
         if comp:
             # 비교 쿼리: 청크 발언자가 두 주체 중 하나인지 확인
@@ -270,10 +268,8 @@ def _validate_speaker_bullets(
                         f"*(발언자 불일치: {stated_label} 발언 아님 — 실제 출처 {chunk_speaker})*"
                     )
                     changed = True
-                    print(
-                        f"[GroundingCheck] 비교쿼리 발언자 불일치 → 확인된 범위 이동: "
-                        f"'{stated_label}' ← {chunk_speaker}"
-                    )
+                    logger.debug(f"[GroundingCheck] 비교쿼리 발언자 불일치 → 확인된 범위 이동: "
+                        f"'{stated_label}' ← {chunk_speaker}")
                     continue
 
                 # 볼드 레이블도 비교 주체가 아닌 완전한 제3자 → 확인된 범위로 이동
@@ -282,7 +278,7 @@ def _validate_speaker_bullets(
                     f"*(직접 발언 아님: {chunk_speaker} 발언 기반)*"
                 )
                 changed = True
-                print(f"[GroundingCheck] 비교쿼리 제3자 발언 이동: '{chunk_speaker}'")
+                logger.debug(f"[GroundingCheck] 비교쿼리 제3자 발언 이동: '{chunk_speaker}'")
                 continue
 
             # 비교 쿼리 Bug A: 명시 발언자가 다른 주체이거나 제3자인지 확인
@@ -297,10 +293,8 @@ def _validate_speaker_bullets(
                         f"*(발언자 불일치: {chunk_speaker} 발언)*"
                     )
                     changed = True
-                    print(
-                        f"[GroundingCheck] 비교쿼리 발언자 혼동: "
-                        f"명시='{stated}' 실제='{chunk_speaker}'"
-                    )
+                    logger.debug(f"[GroundingCheck] 비교쿼리 발언자 혼동: "
+                        f"명시='{stated}' 실제='{chunk_speaker}'")
                     continue
                 if stated_idx < 0 and not _speaker_name_matches(stated, chunk_speaker):
                     # 제3자로 명시됐지만 실제 청크는 비교 주체 → 이름 교정
@@ -308,7 +302,7 @@ def _validate_speaker_bullets(
                     corrected = f"{indent}{bm.group(1)}{chunk_speaker}{bm.group(3)}{bm.group(4)}"
                     out.append(corrected)
                     changed = True
-                    print(f"[GroundingCheck] 비교쿼리 발언자 교정: '{stated}' → '{chunk_speaker}'")
+                    logger.debug(f"[GroundingCheck] 비교쿼리 발언자 교정: '{stated}' → '{chunk_speaker}'")
                     continue
         else:
             # 단독 쿼리 Bug B: 질문 주체 키워드와 청크 발언자 불일치 → 확인된 범위로 이동
@@ -319,19 +313,21 @@ def _validate_speaker_bullets(
             ):
                 moved.append(f"- {s.lstrip('- ').strip()} *(질문 주체 외 발언자)*")
                 changed = True
-                print(f"[GroundingCheck] 타인 발언 이동: '{chunk_speaker}' kw={query_speaker_kw}")
+                logger.debug(f"[GroundingCheck] 타인 발언 이동: '{chunk_speaker}' kw={query_speaker_kw}")
                 continue
 
             # 단독 쿼리 Bug A: 불릿 명시 발언자 ≠ 청크 실제 발언자 → 실제 발언자로 교정
+            # query_speaker_kw가 있을 때만 적용 (특정인 질문).
+            # 없으면 "누가 X를 주장했나" 류의 주제 검색이므로 LLM 발언자 귀속을 그대로 유지.
             bm = _BULLET_BOLD_RE.match(s)
-            if bm and chunk_speaker:
+            if bm and chunk_speaker and query_speaker_kw:
                 stated = bm.group(2).strip()
                 if not _speaker_name_matches(stated, chunk_speaker):
                     indent = " " * (len(line) - len(line.lstrip()))
                     corrected = f"{indent}{bm.group(1)}{chunk_speaker}{bm.group(3)}{bm.group(4)}"
                     out.append(corrected)
                     changed = True
-                    print(f"[GroundingCheck] 발언자 교정: '{stated}' → '{chunk_speaker}'")
+                    logger.debug(f"[GroundingCheck] 발언자 교정: '{stated}' → '{chunk_speaker}'")
                     continue
 
         out.append(line)
@@ -433,7 +429,7 @@ def _check_per_subject_grounding(
     if _strip_flag[0]:
         ans = "\n".join(new_lines)
         changed = True
-        print("[GroundingCheck] 핵심 결론 제3자 인용 제거")
+        logger.debug("[GroundingCheck] 핵심 결론 제3자 인용 제거")
 
     # ── 2) 한계 섹션 기존 '비교 근거 부족' 항목 정리 ─────────────
     lines = ans.splitlines()
@@ -584,7 +580,7 @@ def _remove_contradictory_limits(ans: str) -> tuple[str, bool]:
             in_limits = False
         if in_limits and _LIMITS_CONTRADICTION_RE.search(s):
             changed = True
-            print(f"[GroundingCheck] 확인된 범위 모순 문구 제거: '{s[:60]}'")
+            logger.debug(f"[GroundingCheck] 확인된 범위 모순 문구 제거: '{s[:60]}'")
             continue
         out.append(line)
 
@@ -694,8 +690,11 @@ def _move_uncited_to_limits(ans: str) -> tuple[str, bool]:
                 # 확인된 범위로 이동
                 moved.append(f"- {stripped.lstrip('- ').strip()} *(출처 미확인)*")
         elif section.startswith(("핵심 결론", "메인 결과")) and not has_cite:
-            # 메인 결과/핵심 결론의 미인용 문장 → 인라인 표시
-            out.append(line.rstrip() + " *(출처 미확인)*")
+            # 거절 문장("확인되지 않았습니다" 등)은 인용 없는 게 정상 — 표시 안 함
+            if _CONCLUSION_REFUSAL.search(stripped):
+                out.append(line)
+            else:
+                out.append(line.rstrip() + " *(출처 미확인)*")
         else:
             out.append(line)
 
@@ -831,14 +830,14 @@ def run(state: QAState) -> QAState:
         state["grounded"]        = False
         state["grounding_score"] = 0.0
         state["grounding_level"] = "NONE"
-        print("[GroundingCheck] REFUSED: weak retrieval")
+        logger.debug("[GroundingCheck] REFUSED: weak retrieval")
         return state
 
     # ── 기준 2: [n] 범위 검증 ────────────────────────────────────
     if ans.strip() and docs:
         ans, bad_nums = _fix_out_of_range(ans, len(docs))
         if bad_nums:
-            print(f"[GroundingCheck] out-of-range citations fixed: {bad_nums}")
+            logger.debug(f"[GroundingCheck] out-of-range citations fixed: {bad_nums}")
         state["draft_answer"] = ans
 
     # ── 핵심 결론 '확인 불가' → 세부 근거 제거 ───────────────────
@@ -846,7 +845,7 @@ def run(state: QAState) -> QAState:
         ans, stripped = _strip_detail_if_conclusion_refusal(ans)
         if stripped:
             state["draft_answer"] = ans
-            print("[GroundingCheck] 세부 근거 제거: 핵심 결론이 확인 불가 패턴")
+            logger.debug("[GroundingCheck] 세부 근거 제거: 핵심 결론이 확인 불가 패턴")
 
     # ── 발언자 검증: 타인 발언 이동 + 이름 교정 ──────────────────
     spk_changed = False
@@ -878,7 +877,7 @@ def run(state: QAState) -> QAState:
         ans, unlabeled = _remove_unlabeled_detail_section(ans)
         if unlabeled:
             state["draft_answer"] = ans
-            print("[GroundingCheck] 세부 근거 제거: 볼드 발언자 레이블 없음")
+            logger.debug("[GroundingCheck] 세부 근거 제거: 볼드 발언자 레이블 없음")
 
     # ── grounding 점수·레벨 계산 ──────────────────────────────────
     score = _grounding_score(ans) if ans.strip() else 0.0
@@ -889,6 +888,15 @@ def run(state: QAState) -> QAState:
         level = "PARTIAL"
     else:
         level = "NONE"
+
+    # 인용 없이 "확인되지 않았습니다" 등 올바른 거절이면 REFUSED로 구분
+    _is_refusal = (
+        level == "NONE"
+        and not re.search(r"\[\d+\]", ans)
+        and _CONCLUSION_REFUSAL.search(_extract_conclusion_text(ans))
+    )
+    if _is_refusal:
+        level = "REFUSED"
 
     state["grounded"]        = score > 0
     state["grounding_score"] = round(score, 3)
@@ -904,15 +912,17 @@ def run(state: QAState) -> QAState:
 
     if should_process:
         # ── 기준 4: 미인용 문장 → ## 확인된 범위로 이동 ─────────────────
-        if level in ("PARTIAL", "NONE"):
+        if level in ("PARTIAL", "NONE"):  # REFUSED는 올바른 거절 → 이동 불필요
             ans, moved = _move_uncited_to_limits(ans)
             state["draft_answer"] = ans
             if moved:
-                print("[GroundingCheck] uncited sentences moved to 확인된 범위")
+                logger.debug("[GroundingCheck] uncited sentences moved to 확인된 범위")
 
         # ── 기준 1/전체: 최종 경고 ────────────────────────────────
         _is_comp = bool((state.get("meta") or {}).get("query_comparison_subjects"))
-        if level == "NONE":
+        if level == "REFUSED":
+            pass  # 올바른 거절 — 경고 불필요
+        elif level == "NONE":
             state["draft_answer"] = ans.rstrip() + _WARN_NONE
         elif level == "PARTIAL":
             # 비교 쿼리에서 발언자 불일치가 발견된 경우 전용 경고 사용
@@ -924,13 +934,11 @@ def run(state: QAState) -> QAState:
         # ── 기준 3: 인용-청크 지지 체크 (로그용) ──────────────────
         support_warns = _check_citation_support(ans, docs)
         if support_warns:
-            print(f"[GroundingCheck] citation support warnings ({len(support_warns)}건):")
+            logger.debug(f"[GroundingCheck] citation support warnings ({len(support_warns)}건):")
             for w in support_warns[:5]:
-                print(f"  {w}")
+                logger.debug(f"  {w}")
 
-    print(
-        f"[GroundingCheck] level={level} score={score:.2f} "
+    logger.debug(f"[GroundingCheck] level={level} score={score:.2f} "
         f"docs={len(docs)} weak={is_weak} "
-        f"warned={'yes' if should_process and level != 'FULL' else 'no'}"
-    )
+        f"warned={'yes' if should_process and level != 'FULL' else 'no'}")
     return state

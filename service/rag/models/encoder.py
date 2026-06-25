@@ -82,7 +82,7 @@ class EmbeddingEncoder:
         try:
             if self.model_type == EmbeddingModelType.BGE_M3:
                 from service.rag.models.bge_m3 import encode_dense
-                return encode_dense([query], batch_size=1)[0]
+                return encode_dense([query], batch_size=1, max_length=512)[0]
             elif isinstance(self.model, SentenceTransformer):
                 return self._encode_with_sentence_transformer([query], is_query=True)[0]
             else:

@@ -484,8 +484,68 @@ class NeuralReranker(BaseReranker):
         return reranked[:top_k] if top_k else reranked
 
 
-def create_neural_reranker(model_name: str | None = None) -> NeuralReranker:
-    """Neural Reranker 생성"""
+class JinaReranker(BaseReranker):
+    """
+    Jina Rerank API 기반 리랭커.
+    JINA_API_KEY 환경변수가 설정되면 자동으로 사용.
+    모델: jina-reranker-v2-base-multilingual (한국어 포함 100개 언어 지원)
+    """
+
+    API_URL = "https://api.jina.ai/v1/rerank"
+    MODEL = "jina-reranker-v2-base-multilingual"
+
+    def __init__(self):
+        super().__init__("JinaReranker")
+        import os
+        self.api_key = os.getenv("JINA_API_KEY", "").strip()
+
+    def rerank(
+        self,
+        query: str,
+        candidates: List[Dict[str, Any]],
+        top_k: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        if not candidates:
+            return candidates
+        if not self.api_key:
+            logger.warning("JinaReranker: JINA_API_KEY 없음, 원본 순서 반환")
+            return candidates[:top_k] if top_k else candidates
+
+        import requests as _req
+
+        documents = [c.get("content") or c.get("chunk_text") or "" for c in candidates]
+        payload = {
+            "model": self.MODEL,
+            "query": query,
+            "documents": documents,
+            "top_n": top_k or len(candidates),
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = _req.post(self.API_URL, json=payload, headers=headers, timeout=10)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            reranked = []
+            for r in results:
+                idx = r["index"]
+                doc = candidates[idx].copy()
+                doc["neural_score"] = float(r["relevance_score"])
+                doc["rerank_score"] = float(r["relevance_score"])
+                reranked.append(doc)
+            return reranked
+        except Exception as e:
+            logger.error(f"JinaReranker API 호출 실패: {e} — 원본 순서 반환")
+            return candidates[:top_k] if top_k else candidates
+
+
+def create_neural_reranker(model_name: str | None = None) -> BaseReranker:
+    """Jina API key가 있으면 JinaReranker, 없으면 로컬 NeuralReranker 사용"""
+    import os
+    if os.getenv("JINA_API_KEY", "").strip():
+        return JinaReranker()
     return NeuralReranker(model_name=model_name)
 
 

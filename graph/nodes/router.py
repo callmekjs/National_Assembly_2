@@ -3,6 +3,11 @@ import re
 
 from graph.state import QAState
 from graph.utils.level import defaults
+from service.rag.query.question_types import (
+    apply_route_defaults,
+    classify_question,
+    get_question_type_spec,
+)
 from service.rag.retrieval.temporal_parser import NationalAssemblyTemporalParser
 
 logger = logging.getLogger(__name__)
@@ -72,7 +77,8 @@ def run(state: QAState) -> QAState:
     """
     기본 검색 메타(top_k, alpha 등)를 깔고, 호출 시 넘긴 meta로 덮어쓴다.
     질문에 특정 문서명이 감지되면 doc_name_query 플래그를 설정한다.
-    단독 발언자 질문이면 query_speaker_kw, 비교 질문이면 query_comparison_subjects를 설정한다.
+    질문 유형을 question_type으로 분류하고, 단독 발언자 질문이면 query_speaker_kw,
+    비교 질문이면 query_comparison_subjects를 설정한다.
     """
     logger.info("Router start")
     incoming = state.get("meta")
@@ -85,6 +91,11 @@ def run(state: QAState) -> QAState:
         logger.info("Router: doc_name_query detected")
 
     if question:
+        question_type = classify_question(question)
+        state["meta"] = apply_route_defaults(state["meta"], question_type, force_question_type=True)
+        spec = get_question_type_spec(question_type)
+        logger.info("Router: question_type=%s(%s)", spec.id, spec.label)
+
         speaker_kw = _extract_query_speaker_kw(question)
         if speaker_kw:
             state["meta"]["query_speaker_kw"] = speaker_kw
@@ -98,7 +109,7 @@ def run(state: QAState) -> QAState:
         # 여야 비교 쿼리 감지 → balance_speakers 자동 활성화
         # UI에서 이미 켠 경우엔 그대로 유지
         if not state["meta"].get("balance_speakers") and _is_party_comparison_query(question):
-            state["meta"]["balance_speakers"] = True
+            state["meta"] = apply_route_defaults(state["meta"], "comparison", force_question_type=True)
             logger.info("Router: party_comparison detected → balance_speakers=True")
 
         # 쿼리에서 날짜 범위 추출 — UI에서 이미 명시한 경우엔 덮어쓰지 않음

@@ -1,22 +1,73 @@
 from __future__ import annotations
 
+import contextlib
 from typing import Any, Generator
 
 import psycopg2
+from psycopg2 import pool as pg_pool
 from pgvector.psycopg2 import register_vector
 
 from config.vector_database import get_vector_db_config
 from service.rag.interfaces.vector_store import SearchResult
 
+_POOL: pg_pool.ThreadedConnectionPool | None = None
+_POOL_CFG: dict = {}
+
+
+def _build_pool(cfg: dict) -> pg_pool.ThreadedConnectionPool:
+    conn_cfg = {**cfg, "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
+    return pg_pool.ThreadedConnectionPool(minconn=1, maxconn=5, **conn_cfg)
+
 
 class PgVectorStore:
     def __init__(self, db_config: dict[str, Any] | None = None):
+        global _POOL, _POOL_CFG
         cfg = db_config or get_vector_db_config().get_db_config()
-        self.conn = psycopg2.connect(**cfg)
-        register_vector(self.conn)
+        if _POOL is None or _POOL_CFG != cfg:
+            if _POOL is not None:
+                try:
+                    _POOL.closeall()
+                except Exception:
+                    pass
+            _POOL_CFG = cfg
+            _POOL = _build_pool(cfg)
+        self._pool = _POOL
+        self._conn_cfg = {**cfg, "keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
+
+    @contextlib.contextmanager
+    def _conn(self):
+        conn = self._pool.getconn()
+        try:
+            if conn.closed:
+                conn = psycopg2.connect(**self._conn_cfg)
+            else:
+                try:
+                    with conn.cursor() as _c:
+                        _c.execute("SELECT 1")
+                    conn.rollback()
+                except Exception:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    conn = psycopg2.connect(**self._conn_cfg)
+            register_vector(conn)
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                self._pool.putconn(conn)
+            except Exception:
+                pass
 
     def is_connected(self) -> bool:
-        return self.conn is not None and self.conn.closed == 0
+        return self._pool is not None
 
     def search_similar(
         self,
@@ -63,7 +114,7 @@ class PgVectorStore:
         """
         params.extend([query_embedding, top_k])
 
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
@@ -80,7 +131,7 @@ class PgVectorStore:
 
     def insert_embeddings(self, _model_type, chunk_ids: list[str], embeddings: list[list[float]]) -> int:
         rows = list(zip(chunk_ids, embeddings))
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.executemany(
                 """
                 INSERT INTO embeddings_e5 (chunk_id, embedding)
@@ -89,11 +140,10 @@ class PgVectorStore:
                 """,
                 rows,
             )
-        self.conn.commit()
         return len(rows)
 
     def count_chunks_to_process(self, _model_type=None, skip_existing: bool = True) -> int:
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             if skip_existing:
                 cur.execute(
                     """
@@ -122,7 +172,7 @@ class PgVectorStore:
         if limit:
             sql += f" LIMIT {int(limit)}"
 
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql)
             while True:
                 batch = cur.fetchmany(fetch_size)
@@ -142,7 +192,7 @@ class PgVectorStore:
         sql = f"""
         SELECT c.chunk_id, c.source_id, c.clean_text,
                1 - (e.embedding <=> %s::vector) AS sim, c.metadata,
-               c.speaker, c.speaker_role
+               c.speaker, c.speaker_role, c.page_no
         FROM embeddings_e5_v2 e
         JOIN chunks_v2 c ON c.chunk_id = e.chunk_id
         WHERE {where}
@@ -150,7 +200,7 @@ class PgVectorStore:
         LIMIT %s
         """
         params = [query_embedding] + filter_params + [query_embedding, top_k]
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
@@ -159,7 +209,7 @@ class PgVectorStore:
                 source_id=row[1] or "",
                 content=row[2] or "",
                 similarity=float(row[3] or 0.0),
-                metadata=row[4] or {},
+                metadata=_merge_page_meta(row[4], row[7]),
                 speaker=row[5] or "",
                 speaker_role=row[6] or "",
             )
@@ -178,7 +228,7 @@ class PgVectorStore:
         SELECT c.chunk_id, c.source_id, c.clean_text,
                ts_rank(to_tsvector('simple', c.clean_text),
                        plainto_tsquery('simple', %s)) AS rank,
-               c.metadata, c.speaker, c.speaker_role
+               c.metadata, c.speaker, c.speaker_role, c.page_no
         FROM chunks_v2 c
         WHERE {where}
           AND to_tsvector('simple', c.clean_text) @@ plainto_tsquery('simple', %s)
@@ -186,7 +236,7 @@ class PgVectorStore:
         LIMIT %s
         """
         params = [query_text] + filter_params + [query_text, top_k]
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
@@ -195,7 +245,7 @@ class PgVectorStore:
                 source_id=row[1] or "",
                 content=row[2] or "",
                 similarity=float(row[3] or 0.0),
-                metadata=row[4] or {},
+                metadata=_merge_page_meta(row[4], row[7]),
                 speaker=row[5] or "",
                 speaker_role=row[6] or "",
             )
@@ -215,13 +265,13 @@ class PgVectorStore:
         where, filter_params = _build_v2_filter_where(filters)
         sql = f"""
         SELECT c.chunk_id, c.source_id, c.clean_text,
-               0.0 AS sim, c.metadata, c.speaker, c.speaker_role
+               0.0 AS sim, c.metadata, c.speaker, c.speaker_role, c.page_no
         FROM chunks_v2 c
         WHERE {where}
           AND c.chunk_id IN ({placeholders})
         """
         params = filter_params + list(chunk_ids)
-        with self.conn.cursor() as cur:
+        with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
@@ -230,12 +280,26 @@ class PgVectorStore:
                 source_id=row[1] or "",
                 content=row[2] or "",
                 similarity=float(row[3] or 0.0),
-                metadata=row[4] or {},
+                metadata=_merge_page_meta(row[4], row[7]),
                 speaker=row[5] or "",
                 speaker_role=row[6] or "",
             )
             for row in rows
         ]
+
+
+def _merge_page_meta(metadata: dict | None, page_no) -> dict:
+    meta = dict(metadata or {})
+    if page_no is not None:
+        meta["page_no"] = int(page_no)
+    return meta
+
+
+def _to_iso_date(d: str) -> str:
+    """YYYYMMDD → YYYY-MM-DD. 이미 ISO 형식이면 그대로 반환."""
+    if len(d) == 8 and d.isdigit():
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    return d
 
 
 def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
@@ -245,9 +309,14 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     if not filters:
         return " AND ".join(parts), params
     committee = str(filters.get("committee") or "").strip()
-    date_from = str(filters.get("date_from") or "").strip()
-    date_to = str(filters.get("date_to") or "").strip()
+    date_from = _to_iso_date(str(filters.get("date_from") or "").strip())
+    date_to = _to_iso_date(str(filters.get("date_to") or "").strip())
     speaker = str(filters.get("speaker") or "").strip()
+    question_type = str(filters.get("question_type") or filters.get("question_type_filter") or "").strip()
+    utterance_type = str(filters.get("utterance_type") or "").strip()
+    party = str(filters.get("party") or "").strip()
+    position_type = str(filters.get("position_type") or "").strip()
+    agency = str(filters.get("agency") or "").strip()
     if committee:
         parts.append("COALESCE(c.metadata->>'committee', '') = %s")
         params.append(committee)
@@ -260,6 +329,21 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     if speaker:
         parts.append("COALESCE(c.speaker, '') LIKE %s")
         params.append(f"%{speaker}%")
+    if question_type:
+        parts.append("(c.metadata->'question_type_hints') ? %s")
+        params.append(question_type)
+    if utterance_type:
+        parts.append("COALESCE(c.metadata->>'utterance_type', '') = %s")
+        params.append(utterance_type)
+    if party:
+        parts.append("COALESCE(c.metadata->>'party', '') = %s")
+        params.append(party)
+    if position_type:
+        parts.append("COALESCE(c.metadata->>'position_type', '') = %s")
+        params.append(position_type)
+    if agency:
+        parts.append("COALESCE(c.metadata->>'agency', '') = %s")
+        params.append(agency)
     if bool(filters.get("require_speaker")):
         parts.append("COALESCE(c.speaker, '') <> ''")
     return " AND ".join(parts), params

@@ -365,6 +365,143 @@ python -m service.rag.eval.unanswerable_eval --pg-port 5433
 
 ---
 
+---
+
+## LLM 품질 평가 — 50문항 eval (2026-06-25)
+
+### 목적
+
+검색 회귀(10문항)와 별개로, **LLM 생성 품질**을 체계적으로 측정하기 위해 `eval/questions.json` 50문항 eval 파이프라인을 구축했다.
+
+### 평가 항목
+
+| 문항 유형 | 수 | 측정 목표 |
+|---|---|---|
+| speaker_statement | 15 | 발언자 귀속 정확도 |
+| policy_summary | 8 | 정책 요약 완결성 |
+| comparison | 7 | 발언자·시점 비교 |
+| date_based | 6 | 날짜 기반 정확도 |
+| unanswerable | 6 | 할루시네이션 트랩 거절률 |
+| speaker_confusion | 5 | 발언자 혼동 방어 |
+| multi_chunk | 4 | 복수 청크 통합 |
+| numerical_fact | 2 | 수치 정확도 |
+| cause_effect, quote_exact, aggregation | 각 2 | 인과·인용·집계 |
+
+### 자동 채점 기준
+
+```
+grounding_ok    = grounding_level in ("FULL", "PARTIAL")
+latency_ok      = latency_ms < 10,000ms
+keyword_ok      = expected_keywords 전부 포함
+unanswerable_refused = 거절 문구 포함 AND grounding in ("NONE", "REFUSED")
+```
+
+### 실험 이력
+
+#### 실험 3 (BGE-M3 + gpt-4o-mini, 기준선)
+
+| 지표 | 결과 |
+|---|---|
+| grounding_ok | 49/50 (98%) |
+| latency <10s | 48/50 |
+
+#### 하이브리드 모델 실험 — 패치 전 (2026-06-25 19:16)
+
+문제 유형에 따라 모델을 분기:
+- 일반 질문 → `gpt-4o-mini` (비용 절감)
+- 존재 여부 질문(`논의된 적이 있나요?` 등) + 소관 외 주제 → `gpt-4o` (추론 품질)
+- 존재 여부 질문은 2단계 검증: `_verify_claim()` → NOT_CONFIRMED 시 생성 스킵
+
+| 지표 | 결과 | 비고 |
+|---|---|---|
+| grounding_ok | 27/50 (54%) | 기준선 대비 급락 |
+| latency <10s | 47/50 | |
+| unanswerable 거절 | 5/6 | eval_027 미스카운트 |
+
+**회귀 원인 분석**
+
+존재 여부 감지 패턴(`_EXISTENCE_PATTERNS`)이 너무 넓어 정상 질문을 할루시네이션 트랩으로 오분류:
+
+```python
+# 문제 패턴 (제거 전)
+r"있나요"    # "차이가 있나요?" 같은 일반 질문까지 매칭
+r"했나요\?"  # "어떤 발언을 했나요?" "지적했나요?" 등 전부 매칭
+```
+
+오분류 발생 경로:
+```
+패턴 매칭 → _verify_claim() → NOT_CONFIRMED
+→ generation 스킵 → draft_answer = "회의록에서 해당 내용은 확인되지 않았습니다."
+   (## 메인 결과 헤더 없음)
+→ grounding_check: _extract_conclusion_text() → 헤더 없어 빈 문자열 반환
+→ REFUSED 감지 실패 → grounding = NONE
+→ fallback 인용 5개 붙음
+```
+
+실제 false positive 발생 문항: eval_001, eval_003, eval_004, eval_008, eval_011, eval_016, eval_039, eval_046 등
+
+#### 하이브리드 모델 실험 — 패치 후 최종 (2026-06-25 19:46)
+
+**수정 내용**
+
+1. `service/llm/prompt_templates.py` — `_EXISTENCE_PATTERNS` 구체화
+   ```python
+   # 변경 후: 의미 단위 콤보 패턴만 유지
+   r"한\s*내용이\s*있나요"      # "~한 내용이 있나요?"
+   r"발언한\s*내용이\s*있"      # "발언한 내용이 있나요?"
+   r"논의된\s*적이\s*있나요"    # "논의된 적이 있나요?"
+   r"한\s*적이\s*있나요"        # "~한 적이 있나요?"
+   r"말했나요"                  # "~라고 말했나요?"
+   r"있었나요"                  # "어떤 논의가 있었나요?"
+   ```
+   제거: `r"있나요"` (너무 광범위), `r"했나요\?"` (모든 의문문 매칭)
+
+2. `eval/run_eval.py` — `unanswerable_refused` 채점 수정
+   ```python
+   # 변경 전: grounding == "NONE"
+   # 변경 후: grounding in ("NONE", "REFUSED")
+   ```
+   REFUSED(올바른 거절)도 성공으로 인정
+
+**최종 결과 (`eval/results/final_20260625_194601.json`)**
+
+| 지표 | 결과 |
+|---|---|
+| grounding_ok (FULL+PARTIAL) | **45/50 (90%)** |
+| grounding FULL | 40 |
+| grounding PARTIAL | 5 |
+| grounding REFUSED (올바른 거절) | 2 (eval_025, eval_027) |
+| grounding NONE | 3 |
+| latency <10s | 49/50 (eval_043 10.6s) |
+| keyword hit | 35/37 (95%) |
+| unanswerable 거절 | 5/6 |
+
+### 주요 설계 결정
+
+| 결정 | 이유 |
+|---|---|
+| REFUSED 레벨 신설 | NONE(근거 부족)과 올바른 거절을 구분. UI에서 "확인 불가" 회색 배지로 표시 |
+| 하이브리드 모델 라우팅 | 할루시네이션 트랩은 gpt-4o 추론 필요, 일반 질문은 gpt-4o-mini로 비용 절감 |
+| 2단계 존재 검증 | LLM 생성 전 verifier(max_tokens=20)로 전제 확인 → NOT_CONFIRMED 시 즉시 거절 |
+| 패턴 구체화 | 광범위 regex → 의미 단위 콤보 패턴으로 false positive 12건 제거 |
+
+### 재현 명령
+
+```powershell
+# 서버 실행 (다른 터미널)
+uvicorn api.main:app --reload --port 8001
+
+# 전체 50문항 실행
+python eval/run_eval.py --prefix final
+
+# 특정 문항만
+python eval/run_eval.py --ids eval_001,eval_027 --prefix debug
+```
+
+결과 파일: `eval/results/<prefix>_YYYYMMDD_HHMMSS.json`
+
+---
+
 ## 관련 문서
 
 - [CHANGELOG.md](CHANGELOG.md) — 무엇을 완성했는가

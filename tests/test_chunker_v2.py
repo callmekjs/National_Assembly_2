@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.etl.transform.chunker_v2 import _make_chunk_id, _make_embed_text, _merge_turns
+from service.etl.transform.chunker_v2 import _build_record, _make_chunk_id, _make_embed_text, _merge_turns
 
 _META = {"meeting_date": "2024-07-17", "committee": "외교통일위원회"}
 
@@ -49,6 +49,31 @@ def test_make_embed_text_body_on_new_line():
     lines = result.splitlines()
     assert any("본문입니다." in l for l in lines)
     assert lines[0].startswith("[회의일:")
+
+
+def test_build_record_adds_question_type_metadata_for_member_question():
+    record = _build_record(
+        _turn("통일부는 북한 인권 문제에 대해 어떤 대책을 갖고 있습니까?", speaker="김영배", role="위원"),
+        "20240717_52128_52128",
+    )
+    meta = record["metadata"]
+    assert meta["utterance_type"] == "question"
+    assert "question_draft" in meta["question_type_hints"]
+    assert "qa_pair_extract" in meta["question_type_hints"]
+    assert "[발화유형: 질의]" in record["embed_text"]
+
+
+def test_build_record_adds_agency_metadata_for_government_answer():
+    record = _build_record(
+        _turn("답변드리겠습니다. 통일부는 후속 조치를 검토하고 자료를 제출하겠습니다.", speaker="홍길동", role="통일부장관"),
+        "20240717_52128_52128",
+    )
+    meta = record["metadata"]
+    assert meta["position_type"] == "정부측"
+    assert meta["utterance_type"] == "answer"
+    assert meta["agency"] == "통일부"
+    assert "agency_answer_tracking" in meta["question_type_hints"]
+    assert "[기관: 통일부]" in record["embed_text"]
 
 
 def test_merge_short_same_speaker():

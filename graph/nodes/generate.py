@@ -8,11 +8,34 @@ from datetime import date
 
 from graph.state import QAState
 from service.llm.llm_client import chat, get_last_usage, is_chat_failure_message
-from service.llm.prompt_templates import build_system_prompt, build_user_prompt
+from service.llm.prompt_templates import build_system_prompt, build_user_prompt, needs_reasoning_model, _is_existence_query
 
 logger = logging.getLogger(__name__)
 
 _MAX_OUT = int(os.getenv("GENERATE_MAX_TOKENS", "1024"))
+_REASONING_MODEL = os.getenv("OPENAI_REASONING_MODEL", "gpt-4o")
+
+_VERIFIER_SYSTEM = (
+    "너는 팩트체커다. 아래 [질문]의 전제(특정 발언·사실·논의)가 "
+    "[컨텍스트]에 그 내용 그대로 직접 존재하는지 판단한다.\n"
+    "반드시 첫 줄에 CONFIRMED 또는 NOT_CONFIRMED 중 하나만 출력한다. "
+    "설명·부연 금지."
+)
+
+_REFUSAL_ANSWER = "회의록에서 해당 내용은 확인되지 않았습니다."
+
+
+def _verify_claim(question: str, context: str) -> bool:
+    """존재 여부 질문의 전제가 컨텍스트에 실제로 있는지 확인. True=존재."""
+    try:
+        result = chat(
+            system=_VERIFIER_SYSTEM,
+            user=f"[질문]\n{question}\n\n[컨텍스트]\n{context[:2500]}",
+            max_tokens=20,
+        )
+        return "CONFIRMED" in (result or "").upper() and "NOT_CONFIRMED" not in (result or "").upper()
+    except Exception:
+        return True  # 검증 실패 시 안전하게 생성 진행
 
 
 def _est_tokens(text: str) -> int:
@@ -80,7 +103,7 @@ def _build_numbered_context(state: QAState) -> str:
     """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다. 답변에는 raw 메타 키(source= 등)를 노출하지 말라고 시스템에서 지시한다."""
     docs = state.get("reranked") or state.get("retrieved") or []
     sections: list[str] = []
-    for idx, doc in enumerate(docs[:8], start=1):
+    for idx, doc in enumerate(docs[:6], start=1):
         body = (doc.get("chunk_text") or "").strip()
         if not body:
             continue
@@ -129,10 +152,15 @@ def build_prompts_from_state(state: QAState) -> tuple[str, str]:
     """스트리밍 생성 시 chat.py에서 직접 사용할 (system_prompt, user_prompt) 반환."""
     question = state.get("question", "")
     committee = str(state.get("meta", {}).get("committee") or "").strip()
+    question_type = str(state.get("meta", {}).get("question_type") or "").strip()
     context = _build_numbered_context(state) or state.get("context", "")
     doc_name_query = bool(state.get("meta", {}).get("doc_name_query"))
-    return build_system_prompt(question, committee=committee), build_user_prompt(
-        question, context, reference_date=date.today(), doc_name_query=doc_name_query
+    return build_system_prompt(question, committee=committee, question_type=question_type), build_user_prompt(
+        question,
+        context,
+        reference_date=date.today(),
+        doc_name_query=doc_name_query,
+        question_type=question_type,
     )
 
 
@@ -166,9 +194,15 @@ def run(state: QAState) -> QAState:
         return state
 
     if state.get("retrieval_empty"):
-        state["draft_answer"] = ""
+        question = state.get("question", "")
+        state["draft_answer"] = (
+            f"죄송합니다. 질문 \"{question}\"에 해당하는 회의록을 찾을 수 없습니다.\n\n"
+            "검색된 외교통일위원회 회의록에 관련 내용이 없거나, "
+            "질문하신 날짜·인물·주제가 보유 회의록 범위 밖일 수 있습니다. "
+            "다른 표현으로 다시 질문해 주세요."
+        )
         state["generation_skipped"] = "no_hits"
-        logger.info("[Generate] skipped: retrieval_empty")
+        logger.info("[Generate] skipped: retrieval_empty → 안내 문구 반환")
         return state
 
     try:
@@ -178,16 +212,33 @@ def run(state: QAState) -> QAState:
         context = _build_numbered_context(state) or state.get("context", "")
         max_ref = len(docs)
 
+        # 존재 여부 질문: 전제 검증 먼저 — 없으면 생성 스킵
+        if _is_existence_query(question):
+            if not _verify_claim(question, context):
+                state["draft_answer"] = _REFUSAL_ANSWER
+                state["generation_skipped"] = "existence_not_confirmed"
+                logger.info("[Generate] existence check: NOT_CONFIRMED → 거절 반환")
+                return state
+
         doc_name_query = bool((state.get("meta") or {}).get("doc_name_query"))
-        system_prompt = build_system_prompt(question, committee=committee)
-        user_prompt = build_user_prompt(question, context, reference_date=date.today(), doc_name_query=doc_name_query)
+        question_type = str((state.get("meta") or {}).get("question_type") or "").strip()
+        system_prompt = build_system_prompt(question, committee=committee, question_type=question_type)
+        user_prompt = build_user_prompt(
+            question,
+            context,
+            reference_date=date.today(),
+            doc_name_query=doc_name_query,
+            question_type=question_type,
+        )
         prompt_blob = f"{system_prompt}\n{user_prompt}"
 
+        _model = _REASONING_MODEL if needs_reasoning_model(question) else None
         t0 = time.perf_counter()
         answer = chat(
             system=system_prompt,
             user=user_prompt,
             max_tokens=_MAX_OUT,
+            model=_model,
         )
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
 

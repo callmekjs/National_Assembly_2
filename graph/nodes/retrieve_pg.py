@@ -1,3 +1,4 @@
+import logging
 import re
 import time
 
@@ -6,7 +7,7 @@ from service.rag.retrieval.date_range import normalize_meeting_date_range
 from service.rag.retrieval.retriever import Retriever
 from service.rag.models.config import EmbeddingModelType
 
-import streamlit as st
+logger = logging.getLogger(__name__)
 
 # ── 청크 오염 제거 패턴 ───────────────────────────────────────────
 # 1) 의장 호명: "○○위원 발언해 주십시오" 류
@@ -141,12 +142,18 @@ def run(state: QAState) -> QAState:
     use_score_norm = bool(meta.get("use_score_norm", False))
     use_ensemble_reranker = bool(meta.get("use_ensemble_reranker", False))
     eval_recall = bool(meta.get("eval_recall", False))
-    use_v2_retrieval = bool(meta.get("use_v2_retrieval", False))
+    use_v2_retrieval = bool(meta.get("use_v2_retrieval", True))
     require_speaker = bool(
-        meta.get("speaker")
+        meta.get("require_speaker")
+        or meta.get("speaker")
         or meta.get("query_speaker_kw")
         or meta.get("query_comparison_subjects")
     )
+    question_type_filter = (str(meta.get("question_type_filter") or "").strip() or None)
+    utterance_type = (str(meta.get("utterance_type") or "").strip() or None)
+    party = (str(meta.get("party") or "").strip() or None)
+    position_type = (str(meta.get("position_type") or "").strip() or None)
+    agency = (str(meta.get("agency") or "").strip() or None)
 
     _search_kwargs = dict(
         alpha=alpha,
@@ -173,6 +180,11 @@ def run(state: QAState) -> QAState:
         use_ensemble_reranker=use_ensemble_reranker,
         eval_recall=eval_recall,
         require_speaker=require_speaker,
+        question_type=question_type_filter,
+        utterance_type=utterance_type,
+        party=party,
+        position_type=position_type,
+        agency=agency,
     )
 
     # Rule 1: 비교 쿼리는 두 주체 각각 별도 검색 후 병합
@@ -181,7 +193,7 @@ def run(state: QAState) -> QAState:
     # v2 검색 경로 (use_v2_retrieval=True)
     if use_v2_retrieval:
         if len(comparison_subjects) == 2:
-            print("[Retrieve] use_v2_retrieval=True — 비교쿼리 병렬 검색 미지원, 통합 v2 검색으로 대체")
+            logger.info("[Retrieve] use_v2_retrieval=True — 비교쿼리 병렬 검색 미지원, 통합 v2 검색으로 대체")
         results = retriever.search_v2(
             query=query,
             top_k=top_k,
@@ -191,6 +203,11 @@ def run(state: QAState) -> QAState:
             speaker=meta.get("speaker") or None,
             use_neural_reranker=use_neural_reranker,
             require_speaker=require_speaker,
+            question_type=question_type_filter,
+            utterance_type=utterance_type,
+            party=party,
+            position_type=position_type,
+            agency=agency,
         )
     # v1 검색 경로 (기존 로직 완전 유지)
     elif len(comparison_subjects) == 2:

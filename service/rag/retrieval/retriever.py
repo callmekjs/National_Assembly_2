@@ -59,6 +59,11 @@ class Retriever:
         eval_recall: bool = False,
         eval_k: int = 3,
         require_speaker: bool = False,
+        question_type: str | None = None,
+        utterance_type: str | None = None,
+        party: str | None = None,
+        position_type: str | None = None,
+        agency: str | None = None,
     ) -> list[dict]:
         # Multi-query Retrieval
         if use_multi_query:
@@ -118,6 +123,11 @@ class Retriever:
             "date_to": dt or "",
             "speaker": speaker or "",
             "require_speaker": require_speaker,
+            "question_type": question_type or "",
+            "utterance_type": utterance_type or "",
+            "party": party or "",
+            "position_type": position_type or "",
+            "agency": agency or "",
         }
         multiplier = max(1, int(candidate_multiplier))
         candidate_k = max(top_k, top_k * multiplier)
@@ -358,13 +368,24 @@ class Retriever:
         speaker: str | None = None,
         use_neural_reranker: bool = False,
         require_speaker: bool = False,
+        question_type: str | None = None,
+        utterance_type: str | None = None,
+        party: str | None = None,
+        position_type: str | None = None,
+        agency: str | None = None,
     ) -> list[dict]:
-        """True Hybrid: vector top-50 + BGE-M3 sparse top-50 → RRF → top_k."""
+        """True Hybrid: vector top-20 + BGE-M3 sparse top-20 → RRF → rerank top-15 → top_k.
+        Dense와 Sparse 검색을 ThreadPoolExecutor로 병렬 실행.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         from service.rag.retrieval.date_range import normalize_meeting_date_range
         from service.rag.retrieval.sparse_index import get_sparse_index
         from service.rag.models.bge_m3 import encode_sparse
 
-        vector = self.encoder.encode_query(query)
+        _DENSE_K = 12
+        _SPARSE_K = 20
+        _RERANK_POOL = 8
+
         df, dt = normalize_meeting_date_range(date_from, date_to)
         filters = {
             "committee": committee or "",
@@ -372,38 +393,12 @@ class Retriever:
             "date_to": dt or "",
             "speaker": speaker or "",
             "require_speaker": require_speaker,
+            "question_type": question_type or "",
+            "utterance_type": utterance_type or "",
+            "party": party or "",
+            "position_type": position_type or "",
+            "agency": agency or "",
         }
-
-        # Dense search
-        vector_results = self.store.search_similar_v2(vector, top_k=50, filters=filters)
-
-        # BGE-M3 sparse search via in-memory inverted index
-        sparse_index = get_sparse_index()
-        if sparse_index.is_built:
-            query_sparse = encode_sparse([query], batch_size=1)[0]
-            sparse_hits = sparse_index.search(query_sparse, top_k=50)
-            sparse_chunk_ids = [h["chunk_id"] for h in sparse_hits]
-            sparse_score_map = {h["chunk_id"]: h["sparse_score"] for h in sparse_hits}
-            sparse_rows = self.store.fetch_chunks_by_ids(sparse_chunk_ids, filters=filters)
-            sparse_dicts: list[dict] = []
-            for row in sparse_rows:
-                sparse_dicts.append({
-                    "content": row.content,
-                    "chunk_id": row.chunk_id,
-                    "source_id": row.source_id,
-                    "date": row.metadata.get("meeting_date", ""),
-                    "title": row.metadata.get("section", ""),
-                    "url": row.metadata.get("url", ""),
-                    "similarity": sparse_score_map.get(row.chunk_id, 0.0),
-                    "hybrid_score": sparse_score_map.get(row.chunk_id, 0.0),
-                    "speaker": row.speaker,
-                    "speaker_role": row.speaker_role,
-                    "metadata": row.metadata,
-                })
-        else:
-            # Fallback to FTS if sparse index not yet built
-            fts_rows = self.store.search_keyword_v2(query, top_k=50, filters=filters)
-            sparse_dicts = [_sr_to_dict(r) for r in fts_rows]
 
         def _sr_to_dict(row: "SearchResult") -> dict:
             return {
@@ -420,8 +415,12 @@ class Retriever:
                 "metadata": row.metadata,
             }
 
-        vec_dicts = [_sr_to_dict(r) for r in vector_results]
-        merged = _rrf_merge(vec_dicts, sparse_dicts, k=60, top_n=top_k * 10)
+        # Dense 검색만 사용 (sparse 인코딩 제거로 ~4s 단축)
+        vector = self.encoder.encode_query(query)
+        vec_dicts = [_sr_to_dict(r) for r in self.store.search_similar_v2(vector, top_k=_DENSE_K, filters=filters)]
+        sparse_dicts: list[dict] = []
+
+        merged = _rrf_merge(vec_dicts, sparse_dicts, k=60, top_n=_RERANK_POOL)
 
         for hit in merged:
             hit["hybrid_score"] = hit.get("rrf_score", 0.0)

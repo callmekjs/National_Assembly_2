@@ -51,3 +51,21 @@ def test_multiple_filters_combined():
     })
     assert where.count(" AND ") >= 3
     assert len(params) == 3
+
+
+def test_question_type_filter_uses_jsonb_hint():
+    where, params = _build_v2_filter_where({"question_type": "qa_pair_extract"})
+    assert "question_type_hints" in where
+    assert "?" in where
+    assert "qa_pair_extract" in params
+
+
+def test_utterance_and_agency_filters():
+    where, params = _build_v2_filter_where({
+        "utterance_type": "answer",
+        "agency": "통일부",
+    })
+    assert "utterance_type" in where
+    assert "agency" in where
+    assert "answer" in params
+    assert "통일부" in params

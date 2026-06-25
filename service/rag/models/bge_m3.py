@@ -25,8 +25,8 @@ def _to_float_dict(weights) -> dict[str, float]:
     return {k: float(v) for k, v in weights.items()}
 
 
-def encode_dense(texts: list[str], batch_size: int = 12) -> list[list[float]]:
-    out = _get_model().encode(texts, return_dense=True, return_sparse=False, batch_size=batch_size)
+def encode_dense(texts: list[str], batch_size: int = 12, max_length: int = 8192) -> list[list[float]]:
+    out = _get_model().encode(texts, return_dense=True, return_sparse=False, batch_size=batch_size, max_length=max_length)
     return out["dense_vecs"].tolist()
 
 
