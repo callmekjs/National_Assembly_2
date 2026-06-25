@@ -5,52 +5,60 @@
 
 ---
 
-## 핵심 수치 (2026-06-23 기준)
+## 핵심 수치 (2026-06-25 기준)
 
 | 지표 | 수치 |
 |------|------|
 | 데이터 | 외교통일위원회 회의록 55건 |
 | 청크 수 | 18,048개 (발언자 단위) |
 | recall@3 | **100%** (10/10) |
+| LLM grounding_ok | **45/50 (90%)** — 50문항 eval |
+| LLM latency p95 | **49/50** < 10s |
+| keyword 정확도 | **35/37 (95%)** |
+| 할루시네이션 거절 | **5/6** unanswerable 정확 거절 |
 | RAGAS faithfulness | **0.9857** |
-| 할루시네이션 방어 | Grounding Check FULL / PARTIAL / NONE 3단계 |
-| 시스템 테스트 | 22/22 PASS |
-| 데이터 파이프라인 테스트 | 13/13 PASS |
-| 단위 테스트 | **41/41 PASS** (chunker · normalizer · retriever) |
-| API | FastAPI `POST /query` · `GET /meetings` · `GET /health` |
+| 단위 테스트 | **41/41 PASS** |
 
 ---
 
 ## 시스템 아키텍처
 
 ```
-사용자 질문
+사용자 질문 (React UI)
+    │
+    ▼
+FastAPI  POST /query/stream  (SSE 스트리밍)
     │
     ▼
 ┌─────────────────────────────────────────────────────┐
 │                  LangGraph 파이프라인                 │
 │                                                     │
-│  Query Rewrite → Retrieve → Rerank → Grounding     │
-│                               Check → Generate     │
+│  Router → QueryRewrite → Retrieve → Rerank          │
+│        → ContextTrim → Generate → GroundingCheck    │
 └─────────────────────────────────────────────────────┘
          │                  │
          ▼                  ▼
   ┌─────────────┐    ┌────────────────┐
   │  pgvector   │    │  BM25 검색     │
-  │  벡터 검색   │    │  (키워드)      │
+  │  (BGE-M3)   │    │  (키워드)      │
   └─────────────┘    └────────────────┘
          │                  │
          └────────┬─────────┘
                   ▼
          RRF Fusion 결합
-                  │
                   ▼
          Neural Reranker
          (BAAI/bge-reranker-v2-m3)
-                  │
                   ▼
-         GPT-4o-mini 답변 생성
-         + [n] 출처 인용
+    ┌─────────────────────────────┐
+    │   하이브리드 모델 라우팅      │
+    │  일반 질문   → GPT-4o-mini  │
+    │  존재 여부   → GPT-4o       │
+    │  소관 외 주제 → GPT-4o      │
+    └─────────────────────────────┘
+                  ▼
+         [n] 출처 인용 + Grounding Check
+         (FULL / PARTIAL / REFUSED / NONE)
 ```
 
 ---
@@ -66,24 +74,18 @@ incoming_data/외교통일위원회/*.pdf
     │
     ▼  Transform
     service/etl/transform/normalizer.py   # 텍스트 정규화
-    service/etl/transform/chunker.py      # 발언자(◯) 단위 청킹
+    service/etl/transform/chunker_v2.py   # 발언자(◯) 단위 청킹
     → data/transform/final/chunks.jsonl  (18,048건)
-    │
-    ▼  Validate
-    service/etl/contract.py               # 필수 필드 자동 검증
-    service/etl/quality.py                # 품질 리포트 생성
-    service/etl/run_tracker.py            # 실행 이력 저장
     │
     ▼  Load
     service/etl/loader/jsonl_to_postgres.py  → chunks 테이블
-    service/etl/loader/embeddings.py         → embeddings_e5 테이블
-    (multilingual-e5-small, 384차원, incremental)
+    service/etl/loader/embeddings.py         → embeddings_bge 테이블
+    (BAAI/bge-m3-unsupervised, 1024차원, 하이브리드 검색용)
 ```
 
 **파이프라인 품질 보증**
-- Contract: chunk_id·content 100% / speaker 98.6% / meeting_date 100%
+- chunk_id·content 100% / speaker 98.6% / meeting_date 100%
 - 중복 임베딩 0건 (incremental 방식)
-- run_history.jsonl 로 실행 이력 추적
 
 ---
 
@@ -91,19 +93,32 @@ incoming_data/외교통일위원회/*.pdf
 
 | 노드 | 역할 |
 |------|------|
-| `router` | 질문 유형 분류 (일반 / 비교 / 발언자 단독 / OOD) |
-| `query_rewrite` | 질문 → LLM으로 검색 최적화 변형 |
-| `retrieve_pg` | Fusion(BM25 + 벡터 RRF) + Neural Reranker |
-| `grounding_check` | 검색 결과와 답변의 근거 수준 평가 (FULL / PARTIAL / NONE) |
-| `generate` | GPT-4o-mini 답변 생성 + `[n]` 인용 번호 삽입 |
+| `router` | 질문 유형 분류 (일반 / 비교 / 발언자 단독 / OOD / 문서명) |
+| `query_rewrite` | LLM으로 검색 최적화 질문 변형 |
+| `retrieve_pg` | BGE-M3 하이브리드(Dense+Sparse) + Neural Reranker |
 | `context_trim` | 토큰 초과 방지 컨텍스트 트리밍 |
+| `generate` | 하이브리드 모델(gpt-4o-mini / gpt-4o) + `[n]` 인용 |
+| `grounding_check` | 근거 수준 평가 (FULL / PARTIAL / REFUSED / NONE) |
 
-**검색 전략 (사이드바에서 on/off)**
-- Fusion Retrieval: BM25 + 벡터 검색 결과를 RRF로 통합 (기본 ON)
-- Neural Reranker: cross-encoder로 질문-청크 점수 재계산 (기본 ON)
-- Multi-query: 질문 변형 3개 생성 후 통합
-- HyDE: 가상 답변 임베딩으로 검색
-- 발언자 필터: 특정 발언자 단독 검색
+### Grounding Level
+
+| 레벨 | 조건 | UI 배지 |
+|------|------|---------|
+| FULL | 인용 비율 > 0.6 | 녹색 "근거 충분" |
+| PARTIAL | 0 < 인용 비율 ≤ 0.6 | 노란색 "일부 근거" |
+| REFUSED | 인용 없음 + 거절 문구 감지 | 회색 "확인 불가" |
+| NONE | 인용 없음 (일반) | 빨간색 "근거 부족" |
+
+### 하이브리드 모델 라우팅
+
+```python
+needs_reasoning_model(question):
+    존재 여부 질문  ("논의된 적이 있나요?", "발언한 내용이 있나요?" 등)
+    소관 외 주제   (국민연금, 조세정책, 검찰개혁 등)
+    → gpt-4o  (2단계 존재 검증 포함)
+
+그 외 → gpt-4o-mini
+```
 
 ---
 
@@ -112,109 +127,46 @@ incoming_data/외교통일위원회/*.pdf
 ```
 National_Assembly_2/
 │
-├── app.py                          # Streamlit 진입점
-├── pages/
-│   ├── page1.py                    # 회의록 질의 페이지 라우터
-│   └── views/
-│       └── chat.py                 # 채팅 UI (스트리밍·PDF 뷰어·참고자료 테이블)
-│
-├── graph/                          # LangGraph RAG 파이프라인
-│   ├── app_graph.py                # 그래프 빌드 진입점
-│   ├── state.py                    # GraphState 정의
-│   └── nodes/
-│       ├── router.py               # 질문 유형 라우터
-│       ├── query_rewrite.py        # 질문 변형
-│       ├── retrieve_pg.py          # Fusion + Neural Reranker 검색
-│       ├── grounding_check.py      # 근거 수준 평가 (FULL/PARTIAL/NONE)
-│       ├── generate.py             # LLM 답변 생성
-│       └── context_trim.py         # 컨텍스트 트리밍
+├── frontend/                       # React 프론트엔드
+│   └── src/
+│       ├── App.jsx                 # 메인 UI (SSE 스트리밍, PDF 뷰어, 인용 배지)
+│       └── App.css
 │
 ├── api/
-│   └── main.py                     # FastAPI 앱 (POST /query, GET /meetings, GET /health, 모니터링 엔드포인트)
+│   └── main.py                     # FastAPI (POST /query, POST /query/stream, GET /health 등)
+│
+├── graph/                          # LangGraph RAG 파이프라인
+│   ├── app_graph.py
+│   ├── state.py
+│   └── nodes/
+│       ├── router.py
+│       ├── query_rewrite.py
+│       ├── retrieve_pg.py
+│       ├── grounding_check.py      # FULL/PARTIAL/REFUSED/NONE 판정
+│       ├── generate.py             # 하이브리드 모델 + 2단계 존재 검증
+│       └── context_trim.py
 │
 ├── service/
-│   ├── etl/                        # 데이터 파이프라인
-│   │   ├── extractor/
-│   │   │   └── extractor.py        # PDF → extracted.jsonl
-│   │   ├── transform/
-│   │   │   ├── normalizer.py       # 텍스트 정규화
-│   │   │   ├── chunker.py          # 발언자 단위 청킹
-│   │   │   └── pipeline.py         # Transform 전체 실행
-│   │   ├── loader/
-│   │   │   ├── jsonl_to_postgres.py # chunks 테이블 적재
-│   │   │   └── embeddings.py        # 임베딩 적재 (incremental)
-│   │   ├── contract.py             # 스키마 계약 검증
-│   │   ├── quality.py              # 품질 리포트 생성
-│   │   └── run_tracker.py          # 실행 이력 추적
-│   │
+│   ├── etl/                        # 데이터 파이프라인 (Extract→Transform→Load)
 │   ├── llm/
-│   │   ├── llm_client.py           # OpenAI 우선 / 로컬 HF 폴백
-│   │   └── prompt_templates.py     # 위원회 도메인 특화 프롬프트
-│   │
-│   ├── monitoring/
-│   │   └── query_logger.py         # 쿼리 로그 DB 저장 · recall=0 감지 · latency 추적
-│   │
+│   │   ├── llm_client.py           # OpenAI 클라이언트 (스트리밍 지원)
+│   │   └── prompt_templates.py     # 도메인 특화 프롬프트 + 라우팅 감지 함수
 │   └── rag/
-│       ├── retrieval/
-│       │   ├── retriever.py         # Retriever 통합 인터페이스
-│       │   └── bm25_retriever.py    # BM25 키워드 검색
-│       ├── vectorstore/
-│       │   └── pgvector_store.py    # pgvector 벡터 검색
-│       ├── models/
-│       │   └── config.py            # 임베딩 모델 설정
-│       └── eval/
-│           ├── eval_dataset.json         # RAGAS 평가셋 50문항
-│           ├── eval_dataset_manual.json  # 수동 평가셋 23문항
-│           ├── ragas_eval.py             # RAGAS 자동 평가
-│           └── unanswerable_eval.py      # OOD 거부 평가
+│       ├── retrieval/retriever.py  # BGE-M3 하이브리드 검색
+│       └── vectorstore/pgvector_store.py
 │
-├── scripts/
-│   └── healthcheck.py              # Postgres 4단계 진단 CLI (.env 자동 로드)
+├── eval/                           # LLM 품질 평가 파이프라인
+│   ├── questions.json              # 50문항 (11개 유형)
+│   ├── run_eval.py                 # 자동 채점 스크립트
+│   └── results/                    # 실험별 결과 JSON
 │
-├── tests/                          # 단위·통합 테스트 (DB 없이 실행 가능)
-│   ├── conftest.py                 # --pg-port 옵션, DB 픽스처 (session 스코프)
-│   ├── test_chunker.py             # chunker 단위 테스트 13개
-│   ├── test_normalizer.py          # normalizer 단위 테스트 16개
-│   ├── test_retriever.py           # retriever 내부 메서드 12개
-│   └── test_e2e_pipeline.py        # E2E 통합 테스트 5개 (실제 DB 필요)
-│
+├── tests/                          # 단위·통합 테스트
 ├── docs/
-│   ├── test.md                     # 시스템 테스트 명세 (22개)
-│   ├── test_eval.md                # 시스템 테스트 결과 (22/22 PASS)
-│   ├── Data_test.md                # 데이터 파이프라인 테스트 명세 (13개)
-│   ├── Data_test_eval.md           # 데이터 테스트 결과 (13/13 PASS)
-│   ├── presentation/
-│   │   └── day15-package.md        # 발표 패키지 (서사·데모·다이어그램·수치)
-│   ├── architecture/
-│   │   └── ARCHITECTURE.md         # 설계 결정 근거
-│   ├── evaluation/
-│   │   └── EVALUATION.md           # 성능 평가 기록
-│   └── dev-log/                    # 날짜별 개발 일지
+│   ├── evaluation/EVALUATION.md   # 성능 평가 기록 (eval 실험 이력 포함)
+│   └── dev-log/                   # 날짜별 개발 일지
 │
-├── data/
-│   ├── extract/extracted.jsonl     # ETL 중간 산출물
-│   ├── transform/final/chunks.jsonl
-│   └── reports/                    # quality 리포트 / RAGAS 결과
-│
-├── incoming_data/
-│   └── 외교통일위원회/*.pdf         # 원본 회의록 (55건)
-│
-├── CHANGELOG.md                    # 완료 이력
-├── ROADMAP.md                      # 앞으로 할 것
-├── requirements.txt
-└── run_pipeline.ps1                # 원클릭 파이프라인
+└── .env.example                   # 환경변수 템플릿
 ```
-
----
-
-## 서비스 구성
-
-| 서비스   | 포트  | 볼륨           | 설명                       |
-|---------|-------|----------------|----------------------------|
-| postgres | 5432  | postgres_data  | PostgreSQL + pgvector DB   |
-| (앱)     | 8501  | —              | Streamlit (로컬 직접 실행) |
-
-> **포트 충돌 시** `.env`에서 `PG_PORT=5433`으로 변경 후 `docker-compose up -d` 재실행.
 
 ---
 
@@ -228,114 +180,73 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-`.env` 파일 생성:
+`.env` 파일 생성 (`.env.example` 참고):
 
 ```
 OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o-mini
+OPENAI_REASONING_MODEL=gpt-4o
 PG_PORT=5433
 PG_HOST=localhost
-PG_DB=skn_project
-PG_USER=postgres
-PG_PASSWORD=post1234
 ```
 
-### 2. DB 기동 (PostgreSQL + pgvector)
+### 2. DB 기동
 
 ```powershell
 docker-compose up -d
-```
-
-DB 기동 후 정상 여부 확인:
-
-```powershell
 python scripts/healthcheck.py
 ```
 
-정상 출력:
-```
-[✅] Postgres 연결 (localhost:5432/skn_project)  ← PG_PORT=5433이면 5433으로 표시
-[✅] chunks 테이블: 18,048건
-[✅] embeddings_e5 테이블: 17,xxx건
-[✅] 벡터 차원: 384
-
-모든 헬스 체크 통과 ✅
-```
-
-### 3. 데이터 파이프라인 실행
+### 3. FastAPI 백엔드 실행
 
 ```powershell
-# 원클릭 (권장)
-.\run_pipeline.ps1 -PgPort 5433
-
-# 단계별
-python -m service.etl.extractor.extractor
-python -m service.etl.transform.pipeline
-python -m service.etl.loader.loader_cli db create
-python -m service.etl.loader.loader_cli load doc --jsonl-dir data/transform/final
-python -m service.etl.loader.loader_cli load vector
-```
-
-### 4. Streamlit 앱 실행
-
-```powershell
-streamlit run app.py
-```
-
-브라우저에서 `http://localhost:8501` 접속 → 회의록 질의 페이지
-
-### 5. FastAPI 서버 실행 (선택)
-
-```powershell
-uvicorn api.main:app --reload --port 8000
+uvicorn api.main:app --reload --port 8001
 ```
 
 | 엔드포인트 | 설명 |
 |-----------|------|
-| `POST /query` | 질문 → 답변 + 인용 + latency |
-| `GET /meetings` | 적재된 회의 목록 |
+| `POST /query` | 질문 → 답변 + 인용 (동기) |
+| `POST /query/stream` | SSE 스트리밍 답변 |
 | `GET /health` | DB 연결 + 청크 수 확인 |
-| `GET /logs` | 최근 쿼리 로그 |
-| `GET /logs/failures` | recall=0 질의 목록 |
-| `GET /logs/stats` | grounding 분포 · 평균 latency |
-| `GET /docs` | Swagger UI (자동 생성) |
+| `GET /meetings` | 적재된 회의 목록 |
+| `GET /docs` | Swagger UI |
 
-### 6. 단위 테스트 실행
+### 4. React 프론트엔드 실행
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+브라우저에서 `http://localhost:5173` 접속
+
+### 5. 단위 테스트
 
 ```powershell
 pytest tests/ -v
-# 41/41 PASS (DB 불필요)
+# 41/41 PASS
 ```
 
 ---
 
-## 평가 실행
-
-### RAGAS 자동 평가
+## LLM 품질 평가 (50문항 eval)
 
 ```powershell
-python -m service.rag.eval.ragas_eval --limit 10
+# 서버 실행 후
+python eval/run_eval.py --prefix my_test
 ```
 
-| 지표 | 점수 |
-|------|------|
-| faithfulness | 0.9857 |
-| context_precision | 측정 완료 |
+결과: `eval/results/my_test_YYYYMMDD_HHMMSS.json`
 
-### OOD 거부 평가
-
-```powershell
-python -m service.rag.eval.unanswerable_eval --pg-port 5433
-```
-
-회의록과 무관한 질문(AI, 스포츠, 타 위원회 등)에 80% 이상 거부 응답 확인.
-
-### 검색 품질 평가
-
-```powershell
-python -m service.rag.evaluate_retrieval --pg-port 5433
-```
-
-recall@3: 100% (10/10)
+| 문항 유형 | 수 |
+|---|---|
+| speaker_statement | 15 |
+| unanswerable (할루시네이션 트랩) | 6 |
+| comparison | 7 |
+| date_based | 6 |
+| speaker_confusion | 5 |
+| multi_chunk / cause_effect 등 | 11 |
 
 ---
 
@@ -343,38 +254,30 @@ recall@3: 100% (10/10)
 
 | 계층 | 기술 |
 |------|------|
-| UI | Streamlit |
-| API | FastAPI + uvicorn |
+| UI | React + Vite |
+| API | FastAPI + uvicorn (SSE 스트리밍) |
 | RAG 오케스트레이션 | LangGraph |
-| LLM | OpenAI GPT-4o-mini (로컬 HF 폴백) |
-| 임베딩 | multilingual-e5-small (384차원) |
-| 벡터 DB | PostgreSQL + pgvector (port 5433) |
-| 키워드 검색 | BM25 (rank_bm25) |
+| LLM | GPT-4o-mini (일반) / GPT-4o (추론 필요) |
+| 임베딩 | BAAI/bge-m3-unsupervised (1024차원, Dense+Sparse) |
+| 벡터 DB | PostgreSQL + pgvector |
 | Neural Reranker | BAAI/bge-reranker-v2-m3 |
 | ETL | Python (pdfplumber, psycopg2) |
-| 평가 | RAGAS 0.4.x |
-| 단위 테스트 | pytest + pytest-mock |
+| 평가 | 자체 50문항 eval + RAGAS |
+| 단위 테스트 | pytest |
 
 ---
 
 ## 주요 설계 결정
 
-**발언자 단위 청킹**: 고정 길이 청킹 대신 `◯` 마커로 발언자 경계에서 분리. 한 발언자의 발언이 섞이지 않아 인용 정확도 향상. 단, 짧은 발언이 많아 300자 미만 청크 비율 69.9% (국회 발언 특성상 허용).
+**발언자 단위 청킹**: 고정 길이 청킹 대신 `◯` 마커로 발언자 경계에서 분리. 한 발언자의 발언이 섞이지 않아 인용 정확도 향상.
 
-**Grounding Check**: LLM 답변 전에 검색 결과와 답변의 연관성을 FULL / PARTIAL / NONE으로 평가. NONE이면 "관련 내용을 찾지 못했습니다"로 거부 — 할루시네이션 방어 핵심.
+**BGE-M3 하이브리드 검색**: Dense(의미 유사도) + Sparse(키워드) 점수를 함께 사용. 발언자명·날짜 포함 질문에서 단일 벡터 검색 대비 recall 향상.
 
-**Fusion + RRF**: 벡터 검색(의미 유사도)과 BM25(키워드 정확도)를 Reciprocal Rank Fusion으로 결합. 단일 벡터 검색 대비 발언자명·날짜 포함 질문에서 recall 향상.
+**하이브리드 모델 라우팅**: 존재 여부 질문("~한 내용이 있나요?")은 gpt-4o로 전환 + 2단계 검증으로 허위 전제 거절. 일반 질문은 gpt-4o-mini 유지로 비용 절감.
 
----
+**REFUSED 레벨**: 올바른 거절(할루시네이션 트랩 방어 성공)을 NONE(근거 부족)과 UI에서 명확히 구분.
 
-## 자주 나는 오류
-
-| 오류 | 해결 |
-|------|------|
-| `relation "embeddings_e5" does not exist` | `loader_cli db create` → `load doc` → `load vector` 순서로 재실행 |
-| `connection ... port 5432 failed` | `.env`에 `PG_PORT=5433` 확인 |
-| `ModuleNotFoundError: No module named 'rag'` | `python -m service.rag...` 형태로 실행 |
-| Windows 유니코드 오류 | `$env:PYTHONIOENCODING='utf-8'` 설정 후 재실행 |
+**SSE 스트리밍**: `/query/stream` 엔드포인트로 토큰 단위 실시간 출력. 체감 응답속도 향상.
 
 ---
 
@@ -382,10 +285,7 @@ recall@3: 100% (10/10)
 
 | 문서 | 내용 |
 |------|------|
-| [CHANGELOG.md](CHANGELOG.md) | 날짜별 완료 이력 |
-| [ROADMAP.md](ROADMAP.md) | Day 14~15 남은 작업 |
-| [docs/test_eval.md](docs/test_eval.md) | 시스템 테스트 22/22 PASS 결과 |
-| [docs/Data_test_eval.md](docs/Data_test_eval.md) | 데이터 파이프라인 테스트 결과 |
+| [docs/evaluation/EVALUATION.md](docs/evaluation/EVALUATION.md) | 검색 회귀·LLM eval·실험 이력 |
 | [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) | 설계 결정 근거 |
-| [docs/evaluation/EVALUATION.md](docs/evaluation/EVALUATION.md) | 성능 평가 기록 |
 | [docs/dev-log/](docs/dev-log/) | 날짜별 개발 일지 |
+| [CHANGELOG.md](CHANGELOG.md) | 완료 이력 |
