@@ -259,13 +259,29 @@ app_database.db
 service/rag_jsonl/results/*
 
 # End of https://www.toptal.com/developers/gitignore/api/windows,macos,python
+
 # 임시/로그 파일
+*.tmp
 *.tmp.*
-streamlit_out.txt
-streamlit_err.txt
+*.bak
+*.old
+streamlit_*.txt
+streamlit_*.log
+pip_install.log
+*ragas_out.txt
+
+# Notion sync artifacts
 .notion_sync_state.json
 notion_url.txt
 
-_tmp_check.py
-스크린샷/
-*ragas_out.txt
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Local tool dirs
+.claude/
+.superpowers/
+.agents/
+
+# Dev archive (local only)
+dev_artifacts/
