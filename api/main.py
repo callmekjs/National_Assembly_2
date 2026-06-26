@@ -778,3 +778,168 @@ def log_stats():
     """전체 쿼리 통계 (총 건수, recall=0 비율, 평균 latency, grounding 분포)를 반환합니다."""
     from service.monitoring.query_logger import get_stats
     return get_stats()
+
+
+# ── 회의 탐색 ────────────────────────────────────────────────────────
+
+_ISSUE_TAG_KEYWORDS: dict[str, list[str]] = {
+    "대북전단": ["대북전단", "전단지", "삐라"],
+    "오물풍선": ["오물풍선", "오물 풍선"],
+    "북핵·비핵화": ["북핵", "비핵화", "핵무기", "ICBM", "탄도미사일"],
+    "한미동맹": ["한미동맹", "방위비", "주한미군"],
+    "재외국민": ["재외국민", "교민", "해외동포"],
+    "남북대화": ["남북대화", "남북 관계", "남북교류"],
+    "트럼프·관세": ["트럼프", "관세"],
+    "북한인권": ["북한 인권", "북한인권"],
+    "대북제재": ["대북제재", "유엔 제재", "UN 제재"],
+    "통일정책": ["통일정책", "통일 정책"],
+}
+
+
+def _extract_issue_tags(texts: list[str]) -> list[str]:
+    combined = " ".join(texts)
+    return [tag for tag, keywords in _ISSUE_TAG_KEYWORDS.items()
+            if any(kw in combined for kw in keywords)]
+
+
+class SpeakerStat(BaseModel):
+    speaker: str
+    speaker_role: Optional[str] = None
+    party: Optional[str] = None
+    position_type: Optional[str] = None
+    turn_count: int
+
+
+class MeetingOverview(BaseModel):
+    meeting_date: str
+    committee: str
+    total_turns: int
+    speaker_count: int
+    party_distribution: dict[str, int]
+    govt_turn_count: int
+    top_speakers: list[SpeakerStat]
+    issue_tags: list[str]
+
+
+class TurnItem(BaseModel):
+    turn_index: Optional[int] = None
+    speaker: Optional[str] = None
+    speaker_role: Optional[str] = None
+    party: Optional[str] = None
+    position_type: Optional[str] = None
+    utterance_type: Optional[str] = None
+    content_preview: str
+    source_id: Optional[str] = None
+    page_no: Optional[int] = None
+
+
+@app.get("/meetings/{meeting_date}/overview", response_model=MeetingOverview, summary="회의 개요")
+def meeting_overview(meeting_date: str):
+    """특정 날짜 회의의 개요 — 발언 수, 정당 분포, 주요 발언자, 쟁점 태그를 반환합니다."""
+    try:
+        import psycopg2.extras
+        with _db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+
+                # 기본 집계
+                cur.execute("""
+                    SELECT
+                        COALESCE(metadata->>'committee', '알 수 없음') AS committee,
+                        COUNT(*) AS total_turns,
+                        COUNT(DISTINCT speaker) FILTER (WHERE speaker IS NOT NULL AND speaker <> '') AS speaker_count,
+                        COUNT(*) FILTER (WHERE metadata->>'position_type' = '정부측') AS govt_turn_count
+                    FROM chunks_v2
+                    WHERE metadata->>'meeting_date' = %s
+                      AND section_type = 'body'
+                    GROUP BY committee
+                    LIMIT 1
+                """, (meeting_date,))
+                base = cur.fetchone()
+                if not base:
+                    raise HTTPException(status_code=404, detail=f"{meeting_date} 회의 데이터가 없습니다.")
+
+                # 정당별 발언 수
+                cur.execute("""
+                    SELECT metadata->>'party' AS party, COUNT(*) AS cnt
+                    FROM chunks_v2
+                    WHERE metadata->>'meeting_date' = %s
+                      AND section_type = 'body'
+                      AND metadata->>'party' IS NOT NULL
+                      AND metadata->>'party' NOT IN ('', '미확인')
+                    GROUP BY party
+                    ORDER BY cnt DESC
+                """, (meeting_date,))
+                party_dist = {r["party"]: r["cnt"] for r in cur.fetchall()}
+
+                # 주요 발언자 top 10
+                cur.execute("""
+                    SELECT speaker, speaker_role,
+                           metadata->>'party' AS party,
+                           metadata->>'position_type' AS position_type,
+                           COUNT(*) AS turn_count
+                    FROM chunks_v2
+                    WHERE metadata->>'meeting_date' = %s
+                      AND section_type = 'body'
+                      AND speaker IS NOT NULL AND speaker <> ''
+                    GROUP BY speaker, speaker_role, party, position_type
+                    ORDER BY turn_count DESC
+                    LIMIT 10
+                """, (meeting_date,))
+                top_speakers = [SpeakerStat(**r) for r in cur.fetchall()]
+
+                # 쟁점 태그용 텍스트 수집
+                cur.execute("""
+                    SELECT clean_text FROM chunks_v2
+                    WHERE metadata->>'meeting_date' = %s
+                      AND section_type = 'body'
+                """, (meeting_date,))
+                texts = [r["clean_text"] for r in cur.fetchall()]
+
+        return MeetingOverview(
+            meeting_date=meeting_date,
+            committee=base["committee"],
+            total_turns=base["total_turns"],
+            speaker_count=base["speaker_count"],
+            party_distribution=party_dist,
+            govt_turn_count=base["govt_turn_count"],
+            top_speakers=top_speakers,
+            issue_tags=_extract_issue_tags(texts),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB 오류: {e}")
+
+
+@app.get("/meetings/{meeting_date}/turns", response_model=list[TurnItem], summary="발언 타임라인")
+def meeting_turns(meeting_date: str, limit: int = 300):
+    """특정 날짜 회의의 발언을 순서대로 반환합니다."""
+    try:
+        import psycopg2.extras
+        with _db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        turn_index,
+                        speaker,
+                        speaker_role,
+                        metadata->>'party'          AS party,
+                        metadata->>'position_type'  AS position_type,
+                        metadata->>'utterance_type' AS utterance_type,
+                        LEFT(clean_text, 200)        AS content_preview,
+                        source_id,
+                        page_no
+                    FROM chunks_v2
+                    WHERE metadata->>'meeting_date' = %s
+                      AND section_type = 'body'
+                    ORDER BY turn_index ASC NULLS LAST, id ASC
+                    LIMIT %s
+                """, (meeting_date, limit))
+                rows = cur.fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"{meeting_date} 회의 데이터가 없습니다.")
+        return [TurnItem(**r) for r in rows]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB 오류: {e}")
