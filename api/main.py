@@ -27,16 +27,66 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv
 load_dotenv(ROOT / ".env")
 
+import hashlib
 import json
 import re
+import threading
 
 from fastapi import FastAPI, HTTPException
+from service.rag.query.question_types import infer_utterance_type as _infer_utype
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 _STREAM_MAX_TOKENS = int(os.getenv("GENERATE_MAX_TOKENS", "1024"))
 _CITE_FALLBACK = 5
+
+# ── 쿼리 응답 캐시 (TTL=10분, 최대 200항목) ────────────────────────────
+_QUERY_CACHE: dict[str, tuple[dict, float]] = {}
+_CACHE_TTL = 600
+_CACHE_LOCK = threading.Lock()
+
+# 질문 유형별 적응형 max_tokens
+_ADAPTIVE_TOKENS: dict[str, int] = {
+    "unanswerable": 300,
+    "speaker_statement": 700,
+    "date_based": 700,
+    "numerical_fact": 650,
+    "quote_exact": 700,
+    "speaker_confusion": 650,
+    "policy_summary": 900,
+    "comparison": 900,
+    "multi_chunk": 900,
+    "cause_effect": 800,
+    "aggregation": 800,
+    "cross_committee": 900,
+}
+
+
+def _query_cache_key(question: str, committee: str, top_k: int) -> str:
+    raw = f"{question.strip()}|{committee or ''}|{top_k}"
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _query_cache_get(key: str) -> dict | None:
+    with _CACHE_LOCK:
+        entry = _QUERY_CACHE.get(key)
+        if entry is None:
+            return None
+        payload, ts = entry
+        if time.time() - ts > _CACHE_TTL:
+            del _QUERY_CACHE[key]
+            return None
+        return payload
+
+
+def _query_cache_set(key: str, payload: dict) -> None:
+    with _CACHE_LOCK:
+        _QUERY_CACHE[key] = (payload, time.time())
+        if len(_QUERY_CACHE) > 200:
+            oldest = sorted(_QUERY_CACHE.items(), key=lambda x: x[1][1])[:50]
+            for k, _ in oldest:
+                del _QUERY_CACHE[k]
 
 app = FastAPI(
     title="국회 회의록 RAG API",
@@ -56,10 +106,11 @@ app.add_middleware(
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=2, max_length=500, description="질문")
-    committee: Optional[str] = Field("외교통일위원회", description="위원회 필터")
+    committee: Optional[str] = Field(None, description="위원회 필터 (미지정 시 전체 위원회 검색)")
     top_k: int = Field(5, ge=1, le=20, description="검색 청크 수")
     use_fusion: bool = Field(True, description="Fusion 검색(BM25+벡터 RRF) 활성화")
     use_neural_reranker: bool = Field(True, description="Neural Reranker 활성화")
+    history: Optional[list[dict]] = Field(None, description="멀티턴 대화 히스토리 [{role, content}]")
 
 
 class Citation(BaseModel):
@@ -85,9 +136,14 @@ class QueryResponse(BaseModel):
 
 
 class MeetingItem(BaseModel):
+    source_id: str
     committee: str
     meeting_date: str
     doc_count: int
+    source_path: Optional[str] = None
+    meeting_session: Optional[str] = None
+    meeting_round: Optional[str] = None
+    meeting_label: Optional[str] = None
 
 
 # ── 의존성: DB 연결 ─────────────────────────────────────────────────
@@ -101,6 +157,14 @@ def _db_conn():
         user=os.getenv("PG_USER", "postgres"),
         password=os.getenv("PG_PASSWORD", "post1234"),
     )
+
+
+def _meeting_scope(meeting_key: str) -> tuple[str, tuple[str]]:
+    """회의 상세 조회 범위. source_id를 우선 사용하고 날짜 호출도 기존 호환으로 허용."""
+    key = (meeting_key or "").strip()
+    if "_" in key:
+        return "source_id = %s", (key,)
+    return "metadata->>'meeting_date' = %s", (key,)
 
 
 def _lookup_pdf_path(source_id: str) -> Path | None:
@@ -132,6 +196,49 @@ def _lookup_pdf_path(source_id: str) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _meeting_number_info(source_id: str) -> dict[str, Optional[str]]:
+    """추출된 첫 페이지에서 '제434회 제1차 회의' 표시값을 만든다."""
+    source_id = (source_id or "").strip()
+    if not source_id:
+        return {"meeting_session": None, "meeting_round": None, "meeting_label": None}
+
+    pages_path = ROOT / "data" / "v2" / "extract" / source_id / "pages.jsonl"
+    raw_text = ""
+    try:
+        with pages_path.open("r", encoding="utf-8") as f:
+            first = json.loads(f.readline() or "{}")
+        raw_text = str(first.get("raw_text") or "")
+    except Exception:
+        raw_text = ""
+
+    head = raw_text[:1200]
+    first_line = head.splitlines()[0] if head else ""
+    search_text = first_line or head
+
+    session_match = re.search(r"제\s*(\d+)\s*회", search_text)
+    round_match = re.search(r"제\s*(\d+)\s*차", search_text)
+    if not round_match and search_text != head:
+        round_match = re.search(r"제\s*(\d+)\s*차", head)
+
+    meeting_session = session_match.group(1) if session_match else None
+    meeting_round = round_match.group(1) if round_match else None
+
+    if meeting_session and meeting_round:
+        label = f"제{meeting_session}회 제{meeting_round}차 회의"
+    elif meeting_session:
+        label = f"제{meeting_session}회 회의"
+    elif meeting_round:
+        label = f"제{meeting_round}차 회의"
+    else:
+        label = None
+
+    return {
+        "meeting_session": meeting_session,
+        "meeting_round": meeting_round,
+        "meeting_label": label,
+    }
 
 
 def _build_citation(index: int, cit: dict) -> Citation:
@@ -215,7 +322,7 @@ def query(req: QueryRequest):
     meta = {
         "top_k": req.top_k,
         "rerank_n": min(req.top_k, 5),
-        "committee": req.committee or "외교통일위원회",
+        "committee": req.committee or None,
         "use_fusion": req.use_fusion,
         "use_neural_reranker": req.use_neural_reranker,
         "use_v2_retrieval": True,
@@ -356,12 +463,22 @@ def query_stream(req: QueryRequest):
             from service.llm.prompt_templates import build_system_prompt, build_user_prompt, needs_reasoning_model
             from datetime import date
 
+            # 캐시 확인 (히스토리 없는 단발성 질문만 캐시)
+            _use_cache = not req.history
+            _cache_key = _query_cache_key(req.question, req.committee or "", req.top_k)
+            if _use_cache:
+                cached = _query_cache_get(_cache_key)
+                if cached:
+                    cached_payload = {**cached, "latency": 0, "cached": True}
+                    yield f"data: {json.dumps(cached_payload, ensure_ascii=False)}\n\n"
+                    return
+
             meta = {
-                "top_k": min(req.top_k, 4),   # Jina top-4: 5번째 chunk의 주제 이탈 방지
+                "top_k": min(req.top_k, 4),
                 "rerank_n": min(req.top_k, 4),
-                "committee": req.committee or "외교통일위원회",
+                "committee": req.committee or None,
                 "use_fusion": req.use_fusion,
-                "use_neural_reranker": True,  # JinaReranker API (~0.5s) or local fallback
+                "use_neural_reranker": True,
                 "use_v2_retrieval": True,
             }
             state: dict = {"question": req.question, "meta": meta}
@@ -388,18 +505,28 @@ def query_stream(req: QueryRequest):
                 committee=(state.get("meta") or {}).get("committee", ""),
                 question_type=(state.get("meta") or {}).get("question_type", ""),
             )
+            _committee = (state.get("meta") or {}).get("committee", "")
             user_prompt = build_user_prompt(
                 state.get("question", ""),
                 state.get("context", ""),
                 reference_date=date.today(),
                 doc_name_query=bool((state.get("meta") or {}).get("doc_name_query")),
                 question_type=(state.get("meta") or {}).get("question_type", ""),
+                committee=_committee,
             )
 
-            _reasoning = needs_reasoning_model(req.question)
+            _reasoning = needs_reasoning_model(req.question, committee=_committee)
             _gen_model = os.getenv("OPENAI_REASONING_MODEL", "gpt-4o") if _reasoning else None
+
+            # 질문 유형에 따른 적응형 max_tokens
+            _qtype = (state.get("meta") or {}).get("question_type", "")
+            _max_tokens = min(_STREAM_MAX_TOKENS, _ADAPTIVE_TOKENS.get(_qtype, 800))
+
+            # 멀티턴 히스토리 (최근 6개 메시지 = 3턴)
+            _history = (req.history or [])[-6:] or None
+
             tokens: list[str] = []
-            for token in _stream_openai(system_prompt, user_prompt, max_tokens=_STREAM_MAX_TOKENS, model=_gen_model):
+            for token in _stream_openai(system_prompt, user_prompt, max_tokens=_max_tokens, model=_gen_model, history=_history):
                 tokens.append(token)
                 yield f"data: {json.dumps({'type': 'token', 'content': token}, ensure_ascii=False)}\n\n"
 
@@ -451,6 +578,9 @@ def query_stream(req: QueryRequest):
                 "citations": [c.model_dump() for c in citations],
                 "latency": t_total_ms,
             }
+            # 정상 답변만 캐시 (히스토리 없는 요청, REFUSED 제외)
+            if _use_cache and state.get("grounding_level") != "REFUSED":
+                _query_cache_set(_cache_key, done_payload)
             yield f"data: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
 
         except Exception as e:
@@ -734,19 +864,23 @@ def pdf_viewer(source_id: str, page: int = 1, search: str = ""):
 
 @app.get("/meetings", response_model=list[MeetingItem], summary="회의 목록 조회")
 def meetings():
-    """적재된 회의록의 위원회·날짜·청크 수를 반환합니다."""
+    """적재된 회의록의 PDF 단위 회의 목록과 청크 수를 반환합니다."""
     sql = """
     SELECT
-        metadata->>'committee'    AS committee,
-        metadata->>'meeting_date' AS meeting_date,
+        source_id,
+        COALESCE(MIN(metadata->>'committee'), '알 수 없음') AS committee,
+        MIN(metadata->>'meeting_date') AS meeting_date,
+        MIN(metadata->>'source_path')  AS source_path,
         COUNT(*)                  AS doc_count
     FROM chunks_v2
     WHERE section_type = 'body'
+      AND source_id IS NOT NULL
+      AND source_id <> ''
       AND metadata->>'committee' IS NOT NULL
       AND metadata->>'meeting_date' IS NOT NULL
-    GROUP BY 1, 2
-    ORDER BY 2 DESC, 1
-    LIMIT 200
+    GROUP BY source_id
+    ORDER BY meeting_date DESC, source_id DESC
+    LIMIT 500
     """
     try:
         import psycopg2.extras
@@ -754,7 +888,12 @@ def meetings():
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(sql)
                 rows = cur.fetchall()
-        return [MeetingItem(**r) for r in rows]
+        items: list[MeetingItem] = []
+        for row in rows:
+            payload = dict(row)
+            payload.update(_meeting_number_info(str(payload.get("source_id") or "")))
+            items.append(MeetingItem(**payload))
+        return items
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"DB 오류: {e}")
 
@@ -811,8 +950,12 @@ class SpeakerStat(BaseModel):
 
 
 class MeetingOverview(BaseModel):
+    source_id: Optional[str] = None
     meeting_date: str
     committee: str
+    meeting_session: Optional[str] = None
+    meeting_round: Optional[str] = None
+    meeting_label: Optional[str] = None
     total_turns: int
     speaker_count: int
     party_distribution: dict[str, int]
@@ -833,71 +976,101 @@ class TurnItem(BaseModel):
     page_no: Optional[int] = None
 
 
-@app.get("/meetings/{meeting_date}/overview", response_model=MeetingOverview, summary="회의 개요")
-def meeting_overview(meeting_date: str):
-    """특정 날짜 회의의 개요 — 발언 수, 정당 분포, 주요 발언자, 쟁점 태그를 반환합니다."""
+class QAPair(BaseModel):
+    q_turn_index: Optional[int] = None
+    q_speaker: Optional[str] = None
+    q_speaker_role: Optional[str] = None
+    q_party: Optional[str] = None
+    q_preview: str
+    q_full_text: str = ""
+    q_source_id: Optional[str] = None
+    q_page_no: Optional[int] = None
+    a_turn_index: Optional[int] = None
+    a_speaker: Optional[str] = None
+    a_speaker_role: Optional[str] = None
+    a_preview: str
+    a_full_text: str = ""
+    a_source_id: Optional[str] = None
+    a_page_no: Optional[int] = None
+    confidence: float = 1.0
+    needs_review: bool = False
+    match_keywords: list[str] = []
+    importance: float = 0.0
+
+
+@app.get("/meetings/{meeting_key}/overview", response_model=MeetingOverview, summary="회의 개요")
+def meeting_overview(meeting_key: str):
+    """특정 PDF 회의록의 개요 — 발언 수, 정당 분포, 주요 발언자, 쟁점 태그를 반환합니다."""
     try:
         import psycopg2.extras
+        where_sql, where_params = _meeting_scope(meeting_key)
         with _db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
 
                 # 기본 집계
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
+                        MIN(source_id) AS source_id,
+                        MIN(metadata->>'meeting_date') AS meeting_date,
                         COALESCE(metadata->>'committee', '알 수 없음') AS committee,
                         COUNT(*) AS total_turns,
                         COUNT(DISTINCT speaker) FILTER (WHERE speaker IS NOT NULL AND speaker <> '') AS speaker_count,
                         COUNT(*) FILTER (WHERE metadata->>'position_type' = '정부측') AS govt_turn_count
                     FROM chunks_v2
-                    WHERE metadata->>'meeting_date' = %s
+                    WHERE {where_sql}
                       AND section_type = 'body'
                     GROUP BY committee
                     LIMIT 1
-                """, (meeting_date,))
+                """, where_params)
                 base = cur.fetchone()
                 if not base:
-                    raise HTTPException(status_code=404, detail=f"{meeting_date} 회의 데이터가 없습니다.")
+                    raise HTTPException(status_code=404, detail=f"{meeting_key} 회의 데이터가 없습니다.")
 
                 # 정당별 발언 수
-                cur.execute("""
+                cur.execute(f"""
                     SELECT metadata->>'party' AS party, COUNT(*) AS cnt
                     FROM chunks_v2
-                    WHERE metadata->>'meeting_date' = %s
+                    WHERE {where_sql}
                       AND section_type = 'body'
                       AND metadata->>'party' IS NOT NULL
                       AND metadata->>'party' NOT IN ('', '미확인')
                     GROUP BY party
                     ORDER BY cnt DESC
-                """, (meeting_date,))
+                """, where_params)
                 party_dist = {r["party"]: r["cnt"] for r in cur.fetchall()}
 
                 # 주요 발언자 top 10
-                cur.execute("""
+                cur.execute(f"""
                     SELECT speaker, speaker_role,
                            metadata->>'party' AS party,
                            metadata->>'position_type' AS position_type,
                            COUNT(*) AS turn_count
                     FROM chunks_v2
-                    WHERE metadata->>'meeting_date' = %s
+                    WHERE {where_sql}
                       AND section_type = 'body'
                       AND speaker IS NOT NULL AND speaker <> ''
                     GROUP BY speaker, speaker_role, party, position_type
                     ORDER BY turn_count DESC
                     LIMIT 10
-                """, (meeting_date,))
+                """, where_params)
                 top_speakers = [SpeakerStat(**r) for r in cur.fetchall()]
 
                 # 쟁점 태그용 텍스트 수집
-                cur.execute("""
+                cur.execute(f"""
                     SELECT clean_text FROM chunks_v2
-                    WHERE metadata->>'meeting_date' = %s
+                    WHERE {where_sql}
                       AND section_type = 'body'
-                """, (meeting_date,))
+                """, where_params)
                 texts = [r["clean_text"] for r in cur.fetchall()]
 
+        meeting_number = _meeting_number_info(str(base["source_id"] or ""))
         return MeetingOverview(
-            meeting_date=meeting_date,
+            source_id=base["source_id"],
+            meeting_date=base["meeting_date"] or meeting_key,
             committee=base["committee"],
+            meeting_session=meeting_number["meeting_session"],
+            meeting_round=meeting_number["meeting_round"],
+            meeting_label=meeting_number["meeting_label"],
             total_turns=base["total_turns"],
             speaker_count=base["speaker_count"],
             party_distribution=party_dist,
@@ -911,14 +1084,15 @@ def meeting_overview(meeting_date: str):
         raise HTTPException(status_code=503, detail=f"DB 오류: {e}")
 
 
-@app.get("/meetings/{meeting_date}/turns", response_model=list[TurnItem], summary="발언 타임라인")
-def meeting_turns(meeting_date: str, limit: int = 300):
-    """특정 날짜 회의의 발언을 순서대로 반환합니다."""
+@app.get("/meetings/{meeting_key}/turns", response_model=list[TurnItem], summary="발언 타임라인")
+def meeting_turns(meeting_key: str, limit: int = 300):
+    """특정 PDF 회의록의 발언을 순서대로 반환합니다."""
     try:
         import psycopg2.extras
+        where_sql, where_params = _meeting_scope(meeting_key)
         with _db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("""
+                cur.execute(f"""
                     SELECT
                         turn_index,
                         speaker,
@@ -930,15 +1104,361 @@ def meeting_turns(meeting_date: str, limit: int = 300):
                         source_id,
                         page_no
                     FROM chunks_v2
-                    WHERE metadata->>'meeting_date' = %s
+                    WHERE {where_sql}
                       AND section_type = 'body'
                     ORDER BY turn_index ASC NULLS LAST, id ASC
                     LIMIT %s
-                """, (meeting_date, limit))
+                """, (*where_params, limit))
                 rows = cur.fetchall()
         if not rows:
-            raise HTTPException(status_code=404, detail=f"{meeting_date} 회의 데이터가 없습니다.")
+            raise HTTPException(status_code=404, detail=f"{meeting_key} 회의 데이터가 없습니다.")
         return [TurnItem(**r) for r in rows]
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB 오류: {e}")
+
+
+# ── Q&A 매칭 헬퍼 ────────────────────────────────────────────────
+
+_QA_STOPWORDS: set[str] = {
+    "있습니다", "없습니다", "합니다", "됩니다", "것입니다", "하는", "있는",
+    "그리고", "하지만", "때문에", "관련", "대한", "위한", "통해", "되는",
+    "이런", "우리", "그것", "이것", "많은", "모든", "어떤", "대해서", "대해",
+    "있어서", "없어서", "이라고", "것으로", "이라는", "하겠습니다", "드립니다",
+    "말씀", "위원", "장관", "의원", "위원장", "하셨는데", "하셨습니까",
+    "생각합니다", "보입니다", "경우에", "경우는", "부분이", "부분을", "부분에",
+}
+
+_BUDGET_KEYWORDS: set[str] = {
+    "예산", "증액", "감액", "얼마", "억", "조", "총액", "편성", "배정", "집행",
+    "삭감", "요구액", "세출", "세입", "추경", "교부",
+}
+
+# 쟁점·중요 발언에 등장하는 키워드
+_ISSUE_KEYWORDS: set[str] = {
+    "비판", "문제", "우려", "책임", "부족", "미흡", "위반", "지적", "개선",
+    "대책", "촉구", "요구", "강화", "점검", "부실", "불법", "위법", "시정",
+    "조치", "처벌", "의혹", "부당", "실패", "한계", "해결", "필요", "왜",
+    "중단", "취소", "철회", "재검토", "즉각", "반드시", "심각", "중대",
+}
+
+
+def _calc_importance(q_text: str, a_text: str, confidence: float) -> float:
+    """Q&A 쌍의 중요도 점수 (0~1).
+
+    importance = length_score*0.3 + issue_score*0.4 + entity_score*0.2 + confidence*0.1
+
+    - length_score : 질의+답변 공백 제외 총 길이 (600자 기준 정규화)
+    - issue_score  : 쟁점 키워드 포함 수 (5개 기준 정규화) — 가장 가중치 큼
+    - entity_score : 4글자 이상 고유명사 종류 수 (10개 기준 정규화)
+    - confidence   : 매칭 신뢰도 그대로 반영
+    """
+    combined = q_text + " " + a_text
+
+    total_len = len(q_text.replace(" ", "")) + len(a_text.replace(" ", ""))
+    length_score = min(1.0, total_len / 600)
+
+    issue_count = sum(1 for kw in _ISSUE_KEYWORDS if kw in combined)
+    issue_score = min(1.0, issue_count / 5)
+
+    entities = set(re.findall(r"[가-힣]{4,}", combined)) - _QA_STOPWORDS
+    entity_score = min(1.0, len(entities) / 10)
+
+    return round(
+        length_score * 0.3 + issue_score * 0.4 + entity_score * 0.2 + confidence * 0.1,
+        3,
+    )
+
+_TRIVIAL_RE = re.compile(
+    r"^(알겠습니다|네|예|아니요|아니오|그렇습니다|맞습니다|좋습니다|감사합니다|"
+    r"그러면요|그러면|됐습니다|알아봤습니다|이상입니다|고맙습니다|"
+    r"수고하셨습니다|다음으로|이어서|계속해서)[.!?。,\s]*$"
+)
+_MIN_Q_CHARS = 20
+
+# 실제 질의 텍스트에 있어야 할 패턴 (하나라도 있으면 진짜 질의로 인정)
+_QUESTION_MARKERS = re.compile(
+    r"(입니까|습니까|인가요|어떻습니까|어떠합니까|않습니까|없습니까|됩니까"
+    r"|해주십시오|해주시겠습니까|해주시기|말씀해|알려주|설명해|확인해주|검토해주"
+    r"|부탁드립니다|부탁합니다|요청합니다|주시기\s*바랍니다"
+    r"|\?|？)"
+)
+
+# 정부측 답변 시작에 자주 나오는 패턴
+_ANSWER_MARKERS = re.compile(
+    r"(^네[,.\s]|^예[,.\s]|^저희|^현재|^말씀드리|^그렇습니다|^확인|^검토"
+    r"|^우선|^먼저\s|^일단\s|^구체적으로|^관련하여|^해당\s|^이에\s대해)"
+)
+
+
+def _is_trivial(text: str) -> bool:
+    stripped = re.sub(r"\s+", "", text)
+    return len(stripped) < _MIN_Q_CHARS or bool(_TRIVIAL_RE.match(text.strip()))
+
+
+def _is_budget_question(text: str) -> bool:
+    return any(kw in text for kw in _BUDGET_KEYWORDS)
+
+
+def _has_question_marker(text: str) -> bool:
+    """실제 질의 패턴이 있는지 확인."""
+    return bool(_QUESTION_MARKERS.search(text))
+
+
+def _has_answer_marker(text: str) -> bool:
+    """답변 시작 패턴이 있는지 확인 (첫 100자 기준)."""
+    return bool(_ANSWER_MARKERS.search(text[:100]))
+
+
+def _extract_question_core(full_text: str) -> str:
+    """의원 발언 중 실제 질문 문장(마지막 3문장)만 추출 — 매칭 정확도 향상용."""
+    sentences = re.split(r"(?<=[.?!。])\s+", full_text.strip())
+    if len(sentences) <= 3:
+        return full_text
+    return " ".join(sentences[-3:])
+
+
+def _bigram_sim(text1: str, text2: str) -> float:
+    """한국어 문자 바이그램 자카드 유사도 (0~1)."""
+    def bigrams(t: str) -> set[str]:
+        t = re.sub(r"\s+", "", t)
+        return {t[i:i + 2] for i in range(len(t) - 1)}
+    a, b = bigrams(text1), bigrams(text2)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _shared_keywords(q_text: str, a_text: str) -> list[str]:
+    """질의·답변에 공통으로 등장하는 2글자 이상 한국어 단어 (상위 5개)."""
+    q_words = set(re.findall(r"[가-힣]{2,}", q_text))
+    a_words = set(re.findall(r"[가-힣]{2,}", a_text))
+    shared = (q_words & a_words) - _QA_STOPWORDS
+    return sorted(shared, key=len, reverse=True)[:5]
+
+
+def _entity_overlap_bonus(q_text: str, a_text: str) -> float:
+    """질의·답변에 공통으로 등장하는 고유명사(기관명·사업명 등) 겹침 보너스.
+
+    바이그램 유사도가 낮아도 같은 기관명/사업명이 등장하면 실제 매칭일 가능성이 높음.
+    - 4글자 이상 공통 단어: 기관명·사업명 가능성 높음 → 건당 +0.07
+    - 3글자 공통 단어: 일반 핵심어 → 건당 +0.04
+    - 최대 0.18 (3개 기관명 수준)
+    """
+    q_words = set(re.findall(r"[가-힣]{3,}", q_text))
+    a_words = set(re.findall(r"[가-힣]{3,}", a_text))
+    shared = (q_words & a_words) - _QA_STOPWORDS
+    bonus = 0.0
+    for w in shared:
+        bonus += 0.07 if len(w) >= 4 else 0.04
+    return min(0.18, bonus)
+
+
+def _score_candidate(q_full: str, a_full: str, block_distance: int, is_direct: bool) -> tuple[float, float, list[str]]:
+    """(confidence, topic_sim, keywords) 반환.
+
+    질문 핵심부(마지막 3문장)와 답변 전문의 유사도를 함께 사용해
+    앞부분 설명이 긴 의원 발언의 매칭 정확도를 높인다.
+    """
+    q_core = _extract_question_core(q_full)
+    topic_full = _bigram_sim(q_full, a_full)
+    topic_core = _bigram_sim(q_core, a_full)
+    topic = max(topic_full, topic_core)  # 둘 중 높은 쪽 사용
+
+    proximity = max(0.0, 1.0 - (block_distance - 1) / 5.0)
+    directness = 1.0 if is_direct else 0.65
+
+    # 패턴 보너스: 질의 마커 있으면 +0.05, 답변 마커 있으면 +0.05
+    pattern_bonus = (0.05 if _has_question_marker(q_full) else 0.0) \
+                  + (0.05 if _has_answer_marker(a_full) else 0.0)
+
+    # 고유명사 겹침 보너스: 같은 기관명·사업명이 양쪽에 등장하면 신뢰도 상향
+    entity_bonus = _entity_overlap_bonus(q_full, a_full)
+
+    confidence = round(
+        topic * 0.5 + proximity * 0.3 + directness * 0.2 + pattern_bonus + entity_bonus,
+        2
+    )
+    keywords = _shared_keywords(q_core, a_full)
+    return confidence, topic, keywords
+
+
+def _build_qa_blocks(rows: list[dict]) -> list[dict]:
+    """연속된 같은 발언자·position 턴을 하나의 발언 블록으로 묶는다."""
+    blocks: list[dict] = []
+    i = 0
+    while i < len(rows):
+        turn = rows[i]
+        group = [turn]
+        j = i + 1
+        while j < len(rows):
+            nxt = rows[j]
+            if (nxt.get("speaker") == turn.get("speaker")
+                    and nxt.get("position_type") == turn.get("position_type")):
+                group.append(nxt)
+                j += 1
+            else:
+                break
+        previews = [t.get("content_preview") or "" for t in group]
+        fulls = [t.get("full_text") or "" for t in group]
+        full_text = "\n".join(fulls)
+        position_type = turn.get("position_type") or ""
+        speaker_role = turn.get("speaker_role") or ""
+        # DB 태깅 오류를 보정: 개선된 패턴으로 재추론
+        re_inferred = _infer_utype(full_text, speaker_role=speaker_role, position_type=position_type)
+        blocks.append({
+            "speaker": turn.get("speaker"),
+            "speaker_role": speaker_role,
+            "party": turn.get("party"),
+            "position_type": position_type,
+            "utterance_type": re_inferred,
+            "turn_index": turn.get("turn_index"),
+            "preview": " ".join(previews)[:500],
+            "full_text": full_text,
+            "source_id": turn.get("source_id"),   # 블록 첫 턴 기준
+            "page_no": turn.get("page_no"),
+        })
+        i = j
+    return blocks
+
+
+_CONF_MIN = 0.4      # 이 미만이면 쌍 생성 안 함
+_CONF_REVIEW = 0.6   # 이 미만이면 needs_review = True
+_TOPIC_MIN = 0.05    # 바이그램 유사도 최소 하한
+
+
+@app.get("/meetings/{meeting_key}/qa_pairs", response_model=list[QAPair], summary="질의-답변 쌍")
+def meeting_qa_pairs(meeting_key: str):
+    """
+    위원 질의 → 정부측 답변을 발언 블록 단위로 매칭합니다.
+
+    매칭 방식:
+    - 연속 같은 발언자 턴을 하나의 블록으로 묶음
+    - 질문 블록 뒤 범위 내 정부측 후보를 모두 수집
+    - topic · proximity · directness로 확신 점수 계산 후 최고 점수 후보 선택
+    - 공통 핵심어 없음 / topic < 0.05 / confidence < 0.4 이면 쌍 버림
+    - 예산 관련 질문은 답변에도 예산 단어 있어야 매칭
+    - 너무 짧거나 의미 없는 질문 블록 제외
+    """
+    try:
+        import psycopg2.extras
+        where_sql, where_params = _meeting_scope(meeting_key)
+        with _db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT
+                        turn_index,
+                        speaker,
+                        speaker_role,
+                        metadata->>'party'          AS party,
+                        metadata->>'position_type'  AS position_type,
+                        metadata->>'utterance_type' AS utterance_type,
+                        LEFT(clean_text, 500)        AS content_preview,
+                        clean_text                   AS full_text,
+                        source_id,
+                        page_no
+                    FROM chunks_v2
+                    WHERE {where_sql}
+                      AND section_type = 'body'
+                    ORDER BY turn_index ASC NULLS LAST, id ASC
+                    LIMIT 500
+                """, where_params)
+                rows = [dict(r) for r in cur.fetchall()]
+
+        if not rows:
+            raise HTTPException(status_code=404, detail=f"{meeting_key} 회의 데이터가 없습니다.")
+
+        blocks = _build_qa_blocks(rows)
+        used: set[int] = set()
+        pairs: list[QAPair] = []
+
+        for bi, block in enumerate(blocks):
+            if bi in used:
+                continue
+            if block["position_type"] != "의원":
+                continue
+            if block["utterance_type"] != "question":
+                continue
+            # 너무 짧거나 무의미한 질문 제외
+            if _is_trivial(block["full_text"]):
+                continue
+            # 실제 질의 패턴(물음표·요청어)이 없으면 설명 발언으로 간주하고 제외
+            if not _has_question_marker(block["full_text"]):
+                continue
+
+            is_budget_q = _is_budget_question(block["full_text"])
+
+            # ── 후보 수집 ─────────────────────────────────────────
+            candidates: list[dict] = []
+            for bj in range(bi + 1, min(bi + 7, len(blocks))):
+                if bj in used:
+                    continue
+                nxt = blocks[bj]
+
+                # 다른 의원의 새 질의 → 이 질의 구간 종료
+                if (nxt["position_type"] == "의원"
+                        and nxt["utterance_type"] == "question"
+                        and nxt["speaker"] != block["speaker"]):
+                    break
+
+                if (nxt["position_type"] != "정부측"
+                        or nxt["utterance_type"] not in ("answer", "statement")):
+                    continue
+
+                # 예산 관련 질문: 답변에도 예산 단어 있어야 함
+                if is_budget_q and not any(kw in nxt["full_text"] for kw in _BUDGET_KEYWORDS):
+                    continue
+
+                conf, topic, kws = _score_candidate(
+                    block["full_text"], nxt["full_text"],
+                    block_distance=bj - bi,
+                    is_direct=nxt["utterance_type"] == "answer",
+                )
+                candidates.append({"bj": bj, "nxt": nxt, "conf": conf, "topic": topic, "kws": kws})
+
+            if not candidates:
+                continue
+
+            # ── 최고 점수 후보 선택 ───────────────────────────────
+            best = max(candidates, key=lambda c: c["conf"])
+
+            # 품질 기준 미달 → 버림
+            if not best["kws"]:
+                continue
+            if best["topic"] < _TOPIC_MIN:
+                continue
+            if best["conf"] < _CONF_MIN:
+                continue
+
+            imp = _calc_importance(block["full_text"], best["nxt"]["full_text"], best["conf"])
+            pairs.append(QAPair(
+                q_turn_index=block["turn_index"],
+                q_speaker=block["speaker"],
+                q_speaker_role=block["speaker_role"],
+                q_party=block["party"],
+                q_preview=block["preview"],
+                q_full_text=block["full_text"],
+                q_source_id=block.get("source_id"),
+                q_page_no=block.get("page_no"),
+                a_turn_index=best["nxt"]["turn_index"],
+                a_speaker=best["nxt"]["speaker"],
+                a_speaker_role=best["nxt"]["speaker_role"],
+                a_preview=best["nxt"]["preview"],
+                a_full_text=best["nxt"]["full_text"],
+                a_source_id=best["nxt"].get("source_id"),
+                a_page_no=best["nxt"].get("page_no"),
+                confidence=best["conf"],
+                needs_review=best["conf"] < _CONF_REVIEW,
+                match_keywords=best["kws"],
+                importance=imp,
+            ))
+            used.add(bi)
+            used.add(best["bj"])
+
+        # 중요도 내림차순 정렬 후 반환
+        pairs.sort(key=lambda p: p.importance, reverse=True)
+        return pairs
     except HTTPException:
         raise
     except Exception as e:

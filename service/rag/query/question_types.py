@@ -122,6 +122,23 @@ _ANSWER_MARKERS = re.compile(r"답변드|말씀드리|보고드리|설명드리|
 _PROCEDURAL_MARKERS = re.compile(r"개의|산회|정회|속개|의사일정|상정|선임|발언해\s*주십시오|질의해\s*주시")
 _ISSUE_MARKERS = re.compile(r"쟁점|문제|우려|논란|갈등|비판|지적|개선|대책|필요|부족|위험|책임")
 
+# 한국어 질의 종결 패턴 — 문장 끝에 등장하는 실제 질의 어미/요청어
+_QUESTION_ENDINGS = re.compile(
+    r"(습니까|입니까|인가요|나요|않습니까|없습니까|됩니까|되나요|되십니까"
+    r"|어떻습니까|어떠합니까|어떤가요|어떻게\s*보십니까|어떻게\s*생각하십니까"
+    r"|해주십시오|해주시겠습니까|해주시기\s*바랍니다|주시기\s*바랍니다"
+    r"|부탁드립니다|부탁합니다|요청합니다|요청드립니다"
+    r"|말씀해\s*주|알려주십시오|설명해\s*주|확인해\s*주|검토해\s*주"
+    r"|밝혀주십시오|답해\s*주십시오|\?|？)"
+)
+
+# 의원 의사진행·마무리 발언 패턴 (질의가 아님)
+_MEMBER_PROCEDURAL = re.compile(
+    r"^(이상입니다|이상으로|감사합니다|고맙습니다|수고하셨습니다"
+    r"|다음으로|마치겠습니다|끝내겠습니다|충분합니다|알겠습니다"
+    r"|시간이\s*다|시간\s*관계상)"
+)
+
 _AGENCY_ALIASES: tuple[tuple[str, str], ...] = (
     ("외교부", "외교부"),
     ("통일부", "통일부"),
@@ -210,16 +227,33 @@ def is_government_role(speaker_role: str) -> bool:
 def infer_utterance_type(text: str, speaker_role: str = "", position_type: str = "") -> str:
     body = (text or "").strip()
     role = speaker_role or ""
+
+    # ── 의사진행 (위원장) ──────────────────────────────────────
     if "위원장" in role and _PROCEDURAL_MARKERS.search(body[:200]):
         return "procedural"
+
+    # ── 정부측 / 후보자 ───────────────────────────────────────
     if position_type in {"정부측", "후보자"} or is_government_role(role):
+        # 질의 패턴만 있고 답변 패턴이 없으면 → 반문/설명
         if _QUESTION_MARKERS.search(body) and not _ANSWER_MARKERS.search(body):
             return "statement"
         return "answer"
+
+    # ── 의원 발언 ──────────────────────────────────────────────
+    # 1. 발언 마무리·의사진행 표현이 시작에 있으면 procedural
+    if _MEMBER_PROCEDURAL.search(body[:60]):
+        return "procedural"
+
+    # 2. 발언 끝부분(마지막 400자)에 질의 종결 어미가 있으면 question
+    #    → 앞부분에 설명이 길어도 마지막에 질문이 있으면 올바르게 분류
+    tail = body[-400:] if len(body) > 400 else body
+    if _QUESTION_ENDINGS.search(tail):
+        return "question"
+
+    # 3. 본문 어딘가에 기존 질의 마커가 있으면 question (fallback)
     if _QUESTION_MARKERS.search(body):
         return "question"
-    if _ANSWER_MARKERS.search(body):
-        return "answer"
+
     return "statement"
 
 

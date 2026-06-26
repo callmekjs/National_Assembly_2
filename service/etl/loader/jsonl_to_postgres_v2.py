@@ -6,8 +6,10 @@ from pathlib import Path
 
 import psycopg2
 from psycopg2.extras import Json
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(ROOT / ".env")
 DEFAULT_JSONL = ROOT / "data" / "v2" / "transform" / "final" / "chunks_v2.jsonl"
 
 INSERT_SQL = """

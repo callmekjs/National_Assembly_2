@@ -28,7 +28,8 @@ def _metadata_from_path(path: Path) -> dict:
     if m:
         d = m.group(1)
         meeting_date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-    committee = "외교통일위원회" if "외교통일" in str(path) else ""
+    # 부모 폴더 이름을 위원회명으로 사용 (예: incoming_data/정무위원회/file.pdf)
+    committee = path.parent.name if "위원회" in path.parent.name else ""
     return {"committee": committee, "meeting_date": meeting_date}
 
 

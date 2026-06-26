@@ -20,6 +20,16 @@ COMMITTEE_DOMAIN: dict[str, str] = {
         "주요 의제: 남북관계·한미동맹·대북제재·통일정책·외교안보·핵 문제. "
         "발언자는 통일부 장관·외교부 장관·위원(여야 의원)이 주를 이룬다."
     ),
+    "정무위원회": (
+        "현재 답변 대상 위원회는 **정무위원회**다. "
+        "주요 의제: 금융정책·은행규제·공정거래·자본시장·국가보훈·소비자보호. "
+        "발언자는 금융위원장·공정거래위원장·국가보훈부 장관·위원(여야 의원)이 주를 이룬다."
+    ),
+    "과학기술정보방송통신위원회": (
+        "현재 답변 대상 위원회는 **과학기술정보방송통신위원회**다. "
+        "주요 의제: 방송통신규제·공영방송 독립성·AI정책·사이버보안·통신사 관리감독. "
+        "발언자는 방송통신위원장·과학기술정보통신부 장관·위원(여야 의원)이 주를 이룬다."
+    ),
     "국방위원회": (
         "현재 답변 대상 위원회는 **국방위원회**다. "
         "주요 의제: 방위력 개선·군 작전·방산비리·국방예산·병역. "
@@ -228,8 +238,8 @@ FOCUS_VARIANTS: list[str] = [
 FEW_SHOT_EXAMPLES = """
 [출력 예시 — 반드시 이 형식을 따를 것]
 
-▶ 예시 1: 쟁점 중심 질문 (특정 인물 없이 정책 전반을 묻는 경우)
-질문: "외교통일위원회에서 대북제재에 대해 여야가 어떤 입장을 밝혔나요?"
+▶ 예시: 쟁점 중심 질문 (여야·정부 입장 대조)
+질문: "대북제재에 대해 여야가 어떤 입장을 밝혔나요?"
 
 [컨텍스트]
 [1] (회의일 2024-10-15) 발언자: 이재정 위원 (더불어민주당)
@@ -249,50 +259,6 @@ FEW_SHOT_EXAMPLES = """
 - **이재정 위원(더불어민주당)**은 대북제재가 북한 주민의 인도주의적 상황을 악화시키고 있어 "유연한 접근이 필요하다"고 발언했다[1].
 - **김석기 위원(국민의힘)**은 대북제재가 북핵 도발 억지를 위한 불가피한 조치이므로 "지금은 완화를 논할 시기가 아니다"라고 강조했다[2].
 - **홍길동 장관(정부측)**은 제재 기조를 유지하되 인도주의적 예외 사항은 국제사회와 협의하겠다고 밝혔다[3].
-
----
-
-▶ 예시 2: 단일인 질문 (특정 인물의 발언·입장만 묻는 경우)
-질문: "이재정 위원은 북한 인권 문제에 대해 어떤 입장인가요?"
-
-[컨텍스트]
-[1] (회의일 2024-11-05) 발언자: 이재정 위원 (더불어민주당)
-북한 인권 문제는 중요하지만 대화 채널이 열려 있어야 실질적 개선이 가능합니다.
-[2] (회의일 2024-11-05) 발언자: 김석기 위원 (국민의힘)
-이재정 위원의 발언은 인권을 외교 카드로 삼는 것 아니냐는 비판을 받을 수 있습니다.
-
-올바른 답변:
-## 메인 결과
-
-이재정 위원(더불어민주당)은 북한 인권 문제 해결을 위해 대화 채널이 전제되어야 한다는 입장을 밝혔다[1].
-
-## 세부 근거
-
-- **이재정 위원(더불어민주당)**은 북한 인권 문제가 중요하나 "대화 채널이 열려 있어야 실질적 개선이 가능하다"고 발언했다[1].
-
----
-
-▶ 예시 3: 확인된 범위 섹션이 필요한 경우 (직접 발언 없음)
-질문: "조태열 장관은 대북 정책에 대해 어떤 입장인가요?"
-
-[컨텍스트]
-[1] (회의일 2024-10-20) 발언자: 김기현 위원 (국민의힘)
-조태열 장관은 기존 대북 강경 기조를 유지할 것이라고 알려져 있습니다.
-[2] (회의일 2024-10-20) 발언자: 발언자 미상
-대북 정책과 관련한 외교부의 입장은 변화 없이 유지될 전망입니다.
-
-올바른 답변:
-## 메인 결과
-
-검색된 회의록에서 조태열 장관의 직접 발언은 확인되지 않았다.
-
-## 세부 근거
-
-- **김기현 위원(국민의힘)**은 조태열 장관이 "기존 대북 강경 기조를 유지할 것"이라고 언급했다[1]. (조태열 장관의 발언이 아닌, 제3자 언급임)
-
-## 확인된 범위
-
-검색된 회의록에서 조태열 장관의 직접 발언은 확인되지 않았습니다. [1]은 제3자(김기현 위원)의 언급이며, [2]는 발언자가 미상이므로 장관의 입장으로 단정하기 어렵습니다.
 """
 
 
@@ -374,26 +340,28 @@ _EXISTENCE_WARNING = (
     "      관련 발언이 컨텍스트에 있어도 전제가 없으면 세부 근거를 채우지 않는다\n"
 )
 
-_OUT_OF_SCOPE_WARNING = (
-    "\n\n⚠⚠⚠ [소관 외 주제 — 즉시 적용 필수]\n"
-    "이 질문의 주제는 외교통일위원회 소관이 아닙니다.\n"
-    "컨텍스트에 유사 키워드 청크가 있어도 무시하고 아래 형식만 허용:\n"
-    "      `## 메인 결과`\n"
-    "      외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다.\n"
-    "      ← 이 한 문장만 작성하고 끝낸다\n"
-    "      `## 세부 근거` — 절대 작성 금지\n"
-)
+def _build_out_of_scope_warning(committee: str) -> str:
+    name = (committee or "").strip() or "외교통일위원회"
+    return (
+        f"\n\n⚠⚠⚠ [소관 외 주제 — 즉시 적용 필수]\n"
+        f"이 질문의 주제는 {name} 소관이 아닙니다.\n"
+        "컨텍스트에 유사 키워드 청크가 있어도 무시하고 아래 형식만 허용:\n"
+        "      `## 메인 결과`\n"
+        f"      {name} 회의록에서 해당 주제의 논의는 확인되지 않았습니다.\n"
+        "      ← 이 한 문장만 작성하고 끝낸다\n"
+        "      `## 세부 근거` — 절대 작성 금지\n"
+    )
 
 _EXISTENCE_PATTERNS = [
-    # 존재 여부 직접 질문
+    # 존재 여부 직접 질문 — "어떤 X가 있었나요?"(내용 질문)와 구분하기 위해 구체적 패턴만 유지
     r"한\s*내용이\s*있나요",
     r"발언한\s*내용이\s*있",
     r"논의된\s*적이\s*있나요",
     r"한\s*적이\s*있나요",
     r"주장한\s*적이\s*있나요",
     r"발언한\s*적이\s*있나요",
-    r"있었나요",
-    r"있었습니까",
+    # r"있었나요" 및 r"있었습니까" 제거 — "어떤 논의가 있었나요?"처럼
+    # 내용 질문까지 허위전제 질문으로 오분류해 정상 답변을 막음
     # 특정 발언·사실 확인 ("~라고 말했나요?", "~라고 밝혔나요?" 등)
     r"말했나요",
     r"말했습니까",
@@ -414,23 +382,47 @@ _EXISTENCE_PATTERNS = [
     r"실제로\s*논의",
 ]
 
-_OUT_OF_SCOPE_KEYWORDS = [
-    "국민연금", "조세정책", "검찰개혁", "국방예산", "교육예산",
-    "건강보험", "의료보험", "법인세", "소득세", "부동산세",
-]
+_OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE: dict[str, list[str]] = {
+    "외교통일위원회": [
+        "국민연금", "조세정책", "검찰개혁", "국방예산", "교육예산",
+        "건강보험", "의료보험", "법인세", "소득세", "부동산세",
+    ],
+    "정무위원회": [
+        "대북전단", "비핵화", "한미동맹", "방위비분담", "남북관계",
+        "통일정책", "외교전략", "한미연합훈련",
+    ],
+    "과학기술정보방송통신위원회": [
+        "대북전단", "비핵화", "한미동맹", "방위비", "남북관계",
+        "통일정책", "금리정책", "외환시장",
+    ],
+}
 
 
 def _is_existence_query(question: str) -> bool:
-    return any(_re.search(p, question or "") for p in _EXISTENCE_PATTERNS)
+    q = question or ""
+    for p in _EXISTENCE_PATTERNS:
+        m = _re.search(p, q)
+        if m:
+            # "어떤 X를 밝혔나요?" / "어떤 준비를 언급했나요?" 는 내용 질문 — 존재확인 아님
+            # "어떤"이 30자 이내 앞에 있으면 스킵
+            preceding = q[max(0, m.start() - 30):m.start()]
+            if "어떤" in preceding:
+                continue
+            return True
+    return False
 
 
-def _is_out_of_scope(question: str) -> bool:
-    return any(kw in (question or "") for kw in _OUT_OF_SCOPE_KEYWORDS)
+def _is_out_of_scope(question: str, committee: str = "") -> bool:
+    comm = (committee or "").strip() or "외교통일위원회"
+    keywords = _OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE.get(
+        comm, _OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE["외교통일위원회"]
+    )
+    return any(kw in (question or "") for kw in keywords)
 
 
-def needs_reasoning_model(question: str) -> bool:
+def needs_reasoning_model(question: str, committee: str = "") -> bool:
     """허위 전제·존재 확인·소관 외 판단이 필요한 질문은 추론 능력이 강한 모델이 필요."""
-    return _is_existence_query(question) or _is_out_of_scope(question)
+    return _is_existence_query(question) or _is_out_of_scope(question, committee)
 
 
 def build_user_prompt(
@@ -439,12 +431,13 @@ def build_user_prompt(
     reference_date: date | None = None,
     doc_name_query: bool = False,
     question_type: str = "",
+    committee: str = "",
 ) -> str:
     """난이도 없이 항상 깊이 있는 구조를 요구한다."""
     ref = reference_date or date.today()
     doc_warn = _DOC_NAME_WARNING if doc_name_query else ""
     existence_warn = _EXISTENCE_WARNING if _is_existence_query(question) else ""
-    scope_warn = _OUT_OF_SCOPE_WARNING if _is_out_of_scope(question) else ""
+    scope_warn = _build_out_of_scope_warning(committee) if _is_out_of_scope(question, committee) else ""
     type_note = ""
     if question_type:
         spec = get_question_type_spec(question_type)

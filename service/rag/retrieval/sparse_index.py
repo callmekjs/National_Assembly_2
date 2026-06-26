@@ -4,9 +4,12 @@ import json
 import logging
 import os
 from collections import defaultdict
+from pathlib import Path
 
 import psycopg2
+from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).resolve().parents[4] / ".env")
 logger = logging.getLogger(__name__)
 
 _LOAD_SQL = """

@@ -93,7 +93,7 @@ def run(
     skipped = total_all - total_pending
 
     if total_pending == 0:
-        print("[embed_v2] 미임베딩 청크 없음 — 모두 최신 상태입니다.")
+        print("[embed_v2] 미임베딩 청크 없음 - 모두 최신 상태입니다.")
         conn.close()
         return {"embedded": 0, "skipped": skipped}
 

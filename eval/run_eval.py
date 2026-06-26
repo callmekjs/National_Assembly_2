@@ -2,7 +2,7 @@
 LLM 평가 실행기 — /query 엔드포인트를 호출하고 결과를 기록한다.
 
 사용법:
-    python eval/run_eval.py                    # 전체 50문항
+    python eval/run_eval.py                    # 전체 75문항
     python eval/run_eval.py --ids eval_001,eval_005   # 특정 문항만
     python eval/run_eval.py --dry-run          # API 호출 없이 JSON 구조만 확인
     python eval/run_eval.py --append           # 기존 결과에 누락 항목만 추가
@@ -42,10 +42,10 @@ def load_questions(ids: list[str] | None = None) -> list[dict]:
     return qs
 
 
-def call_api(query: str, top_k: int = 4, retries: int = 3) -> dict:
+def call_api(query: str, committee: str | None = None, top_k: int = 4, retries: int = 3) -> dict:
     payload = {
         "question": query,
-        "committee": "외교통일위원회",
+        "committee": committee,
         "top_k": top_k,
         "use_fusion": True,
         "use_neural_reranker": True,
@@ -166,7 +166,7 @@ def run(args: argparse.Namespace) -> None:
         print(f"\n[{i}/{len(questions)}] {qid}: {q['query'][:55]}…")
 
         try:
-            resp = call_api(q["query"], top_k=4)
+            resp = call_api(q["query"], committee=q.get("committee"), top_k=4)
             scores = auto_grade(q, resp)
 
             lat = scores["latency_ms"]
