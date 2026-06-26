@@ -16,8 +16,12 @@ _MAX_OUT = int(os.getenv("GENERATE_MAX_TOKENS", "1024"))
 _REASONING_MODEL = os.getenv("OPENAI_REASONING_MODEL", "gpt-4o")
 
 _VERIFIER_SYSTEM = (
-    "너는 팩트체커다. 아래 [질문]의 전제(특정 발언·사실·논의)가 "
+    "너는 팩트체커다. 아래 [질문]의 전제(특정 발언·사실·합의·논의)가 "
     "[컨텍스트]에 그 내용 그대로 직접 존재하는지 판단한다.\n"
+    "판단 기준:\n"
+    "- 질문이 전제하는 그 발언·사실이 [컨텍스트]에 명시적으로 등장하면 → CONFIRMED\n"
+    "- 유사한 주제가 있어도 질문의 전제 그 내용이 없으면 → NOT_CONFIRMED\n"
+    "- 애매하거나 불분명하면 → NOT_CONFIRMED\n"
     "반드시 첫 줄에 CONFIRMED 또는 NOT_CONFIRMED 중 하나만 출력한다. "
     "설명·부연 금지."
 )
@@ -26,12 +30,14 @@ _REFUSAL_ANSWER = "회의록에서 해당 내용은 확인되지 않았습니다
 
 
 def _verify_claim(question: str, context: str) -> bool:
-    """존재 여부 질문의 전제가 컨텍스트에 실제로 있는지 확인. True=존재."""
+    """존재 여부 질문의 전제가 컨텍스트에 실제로 있는지 확인. True=존재.
+    생성 모델과 무관하게 항상 추론 능력이 강한 모델을 사용한다."""
     try:
         result = chat(
             system=_VERIFIER_SYSTEM,
             user=f"[질문]\n{question}\n\n[컨텍스트]\n{context[:2500]}",
             max_tokens=20,
+            model=_REASONING_MODEL,
         )
         return "CONFIRMED" in (result or "").upper() and "NOT_CONFIRMED" not in (result or "").upper()
     except Exception:
