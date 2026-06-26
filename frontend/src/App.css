@@ -899,6 +899,406 @@
   background: var(--bg-input);
 }
 
+/* ── 탭 네비게이션 ─────────────────────────────────────── */
+
+.page-nav {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.nav-tab {
+  padding: 6px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+
+.nav-tab:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.nav-tab--active {
+  background: var(--bg-card);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* ── Page 3: 회의 탐색 ─────────────────────────────────── */
+
+.workspace--wide {
+  max-width: 1280px;
+}
+
+.explorer-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.meeting-list {
+  width: 200px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 12px 8px;
+  background: var(--bg-card);
+}
+
+.meeting-list-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0 8px;
+  margin-bottom: 8px;
+}
+
+.meeting-list-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 8px;
+}
+
+.meeting-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.12s;
+  margin-bottom: 2px;
+}
+
+.meeting-list-item:hover {
+  background: var(--bg-input);
+}
+
+.meeting-list-item--active {
+  background: var(--accent-ring);
+  color: var(--accent);
+}
+
+.meeting-date {
+  font-size: 13px;
+  font-weight: 500;
+  color: inherit;
+}
+
+.meeting-chunks {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.meeting-list-item--active .meeting-date {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.explorer-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.explorer-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 14px;
+  color: var(--text-muted);
+  line-height: 1.8;
+}
+
+.explorer-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+/* ── 회의 개요 카드 ──────────────────────────────────────── */
+
+.overview-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.overview-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+
+.overview-stats {
+  display: flex;
+  gap: 12px;
+}
+
+.stat-box {
+  flex: 1;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-num {
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.overview-section-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+
+.party-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.party-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.party-name {
+  font-size: 13px;
+  font-weight: 600;
+  width: 110px;
+  flex-shrink: 0;
+}
+
+.party-bar-wrap {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-input);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.party-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+  min-width: 4px;
+}
+
+.party-cnt {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  width: 28px;
+  text-align: right;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-tag {
+  padding: 4px 12px;
+  background: var(--accent-ring);
+  color: var(--accent);
+  border: 1px solid var(--accent-light);
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.speaker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.speaker-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.speaker-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.speaker-role {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.speaker-cnt {
+  margin-left: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-chip);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
+/* ── 발언 타임라인 ───────────────────────────────────────── */
+
+.turn-timeline {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 24px;
+}
+
+.turn-count {
+  font-weight: 400;
+  color: var(--text-muted);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+
+.turn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.turn-item {
+  display: flex;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.turn-item:last-child {
+  border-bottom: none;
+}
+
+.turn-type-bar {
+  width: 3px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  align-self: stretch;
+  min-height: 16px;
+}
+
+.turn-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.turn-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.turn-speaker {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.turn-role {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.turn-party {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.turn-party--govt {
+  color: #16a34a;
+}
+
+.turn-type-badge {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.turn-type-question { background: #dbeafe; color: #1d4ed8; }
+.turn-type-answer   { background: #dcfce7; color: #15803d; }
+.turn-type-procedural { background: #f3f4f6; color: #6b7280; }
+.turn-type-statement  { background: #f3f4f6; color: #374151; }
+
+.turn-preview {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 /* ── 반응형 ───────────────────────────────────────────── */
 
 @media (max-width: 900px) {

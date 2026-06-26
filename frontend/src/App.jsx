@@ -48,6 +48,7 @@ function clearSession() {
 
 export default function App() {
   const [user, setUser] = useState(() => loadSession())
+  const [page, setPage] = useState('chat')
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -65,10 +66,22 @@ export default function App() {
     setMessages([])
     setInput('')
     setLoading(false)
+    setPage('chat')
   }
 
   if (!isAuthenticated) {
     return <LoginIntroPage onLogin={handleLogin} />
+  }
+
+  if (page === 'meetings') {
+    return (
+      <MeetingExplorerPage
+        user={user}
+        currentPage={page}
+        onNavigate={setPage}
+        onLogout={handleLogout}
+      />
+    )
   }
 
   return (
@@ -81,6 +94,8 @@ export default function App() {
       loading={loading}
       setLoading={setLoading}
       onLogout={handleLogout}
+      currentPage={page}
+      onNavigate={setPage}
     />
   )
 }
@@ -186,6 +201,8 @@ function ResearchWorkspacePage({
   loading,
   setLoading,
   onLogout,
+  currentPage,
+  onNavigate,
 }) {
   const bottomRef = useRef(null)
   const [selectedCitation, setSelectedCitation] = useState(null)
@@ -284,6 +301,16 @@ function ResearchWorkspacePage({
           <h1>국회 회의록 검색</h1>
           <span className="subtitle">외교통일위원회 · 근거 기반 RAG</span>
         </div>
+        <nav className="page-nav">
+          <button
+            className={`nav-tab${currentPage === 'chat' ? ' nav-tab--active' : ''}`}
+            onClick={() => onNavigate('chat')}
+          >질의응답</button>
+          <button
+            className={`nav-tab${currentPage === 'meetings' ? ' nav-tab--active' : ''}`}
+            onClick={() => onNavigate('meetings')}
+          >회의 탐색</button>
+        </nav>
         <div className="workspace-header-right">
           <span className="user-label">{user.displayName || user.username}</span>
           <button type="button" className="btn-logout" onClick={onLogout}>로그아웃</button>
@@ -594,6 +621,251 @@ function PdfViewerPanel({ citation, onClose }) {
         </div>
       )}
     </aside>
+  )
+}
+
+/* ── Page 3: 회의 탐색 ─────────────────────────────── */
+
+const UTTERANCE_COLORS = {
+  question: '#2563eb',
+  answer: '#16a34a',
+  statement: '#6b7280',
+  procedural: '#d1d5db',
+}
+
+const PARTY_COLORS = {
+  '더불어민주당': '#1a56db',
+  '국민의힘': '#e8230a',
+  '조국혁신당': '#7c3aed',
+}
+
+function MeetingExplorerPage({ user, currentPage, onNavigate, onLogout }) {
+  const [meetings, setMeetings] = useState([])
+  const [selectedDate, setSelectedDate] = useState(null)
+  const [overview, setOverview] = useState(null)
+  const [turns, setTurns] = useState([])
+  const [loadingDetail, setLoadingDetail] = useState(false)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/meetings`)
+      .then(r => r.json())
+      .then(data => setMeetings(Array.isArray(data) ? data : []))
+      .catch(() => {})
+  }, [])
+
+  async function selectMeeting(date) {
+    if (date === selectedDate) return
+    setSelectedDate(date)
+    setLoadingDetail(true)
+    setOverview(null)
+    setTurns([])
+    try {
+      const [ov, tv] = await Promise.all([
+        fetch(`${API_BASE}/meetings/${date}/overview`).then(r => r.json()),
+        fetch(`${API_BASE}/meetings/${date}/turns`).then(r => r.json()),
+      ])
+      setOverview(ov)
+      setTurns(Array.isArray(tv) ? tv : [])
+    } catch {
+      setOverview(null)
+      setTurns([])
+    } finally {
+      setLoadingDetail(false)
+    }
+  }
+
+  return (
+    <div className="workspace workspace--wide">
+      <header className="workspace-header">
+        <div className="workspace-header-left">
+          <h1>국회 회의록 검색</h1>
+          <span className="subtitle">외교통일위원회 · 근거 기반 RAG</span>
+        </div>
+        <nav className="page-nav">
+          <button
+            className={`nav-tab${currentPage === 'chat' ? ' nav-tab--active' : ''}`}
+            onClick={() => onNavigate('chat')}
+          >질의응답</button>
+          <button
+            className={`nav-tab${currentPage === 'meetings' ? ' nav-tab--active' : ''}`}
+            onClick={() => onNavigate('meetings')}
+          >회의 탐색</button>
+        </nav>
+        <div className="workspace-header-right">
+          <span className="user-label">{user.displayName || user.username}</span>
+          <button type="button" className="btn-logout" onClick={onLogout}>로그아웃</button>
+        </div>
+      </header>
+
+      <div className="explorer-layout">
+        <aside className="meeting-list">
+          <p className="meeting-list-title">회의 목록</p>
+          {meetings.length === 0 && (
+            <p className="meeting-list-empty">불러오는 중...</p>
+          )}
+          {meetings.map(m => (
+            <button
+              key={m.meeting_date}
+              className={`meeting-list-item${selectedDate === m.meeting_date ? ' meeting-list-item--active' : ''}`}
+              onClick={() => selectMeeting(m.meeting_date)}
+            >
+              <span className="meeting-date">{m.meeting_date}</span>
+              <span className="meeting-chunks">{m.doc_count}건</span>
+            </button>
+          ))}
+        </aside>
+
+        <main className="explorer-detail">
+          {!selectedDate && !loadingDetail && (
+            <div className="explorer-empty">
+              <p>왼쪽 목록에서 회의를 선택하면<br />개요와 발언 타임라인이 표시됩니다.</p>
+            </div>
+          )}
+          {loadingDetail && (
+            <div className="explorer-loading">
+              <span className="dot" /><span className="dot" /><span className="dot" />
+              <span>회의 정보 불러오는 중...</span>
+            </div>
+          )}
+          {!loadingDetail && overview && (
+            <>
+              <MeetingOverviewCard overview={overview} />
+              <TurnTimeline turns={turns} />
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+function MeetingOverviewCard({ overview }) {
+  const totalPartyTurns = Object.values(overview.party_distribution).reduce((a, b) => a + b, 0)
+
+  return (
+    <section className="overview-card">
+      <h2 className="overview-title">
+        {overview.meeting_date} · {overview.committee}
+      </h2>
+
+      <div className="overview-stats">
+        <div className="stat-box">
+          <span className="stat-num">{overview.total_turns}</span>
+          <span className="stat-label">전체 발언</span>
+        </div>
+        <div className="stat-box">
+          <span className="stat-num">{overview.speaker_count}</span>
+          <span className="stat-label">발언자 수</span>
+        </div>
+        <div className="stat-box">
+          <span className="stat-num">{overview.govt_turn_count}</span>
+          <span className="stat-label">정부측 답변</span>
+        </div>
+      </div>
+
+      {totalPartyTurns > 0 && (
+        <div className="party-dist">
+          <p className="overview-section-label">정당별 발언</p>
+          <div className="party-bars">
+            {Object.entries(overview.party_distribution).map(([party, cnt]) => (
+              <div key={party} className="party-row">
+                <span className="party-name" style={{ color: PARTY_COLORS[party] || '#374151' }}>
+                  {party}
+                </span>
+                <div className="party-bar-wrap">
+                  <div
+                    className="party-bar-fill"
+                    style={{
+                      width: `${Math.round((cnt / totalPartyTurns) * 100)}%`,
+                      background: PARTY_COLORS[party] || '#9ca3af',
+                    }}
+                  />
+                </div>
+                <span className="party-cnt">{cnt}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {overview.issue_tags.length > 0 && (
+        <div className="issue-tags-section">
+          <p className="overview-section-label">주요 쟁점</p>
+          <div className="tag-list">
+            {overview.issue_tags.map(tag => (
+              <span key={tag} className="issue-tag">{tag}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {overview.top_speakers.length > 0 && (
+        <div className="top-speakers">
+          <p className="overview-section-label">주요 발언자</p>
+          <div className="speaker-chips">
+            {overview.top_speakers.slice(0, 8).map(s => (
+              <span key={s.speaker} className="speaker-chip">
+                <span
+                  className="speaker-dot"
+                  style={{
+                    background: PARTY_COLORS[s.party] || (s.position_type === '정부측' ? '#16a34a' : '#9ca3af'),
+                  }}
+                />
+                {s.speaker}
+                {s.speaker_role && <span className="speaker-role"> {s.speaker_role}</span>}
+                <span className="speaker-cnt">{s.turn_count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function TurnTimeline({ turns }) {
+  if (!turns.length) return null
+
+  const LABEL = {
+    question: '질의',
+    answer: '답변',
+    procedural: '의사진행',
+    statement: '발언',
+  }
+
+  return (
+    <section className="turn-timeline">
+      <p className="overview-section-label">발언 타임라인 <span className="turn-count">({turns.length}건)</span></p>
+      <div className="turn-list">
+        {turns.map((t, i) => (
+          <div key={i} className="turn-item">
+            <div
+              className="turn-type-bar"
+              style={{ background: UTTERANCE_COLORS[t.utterance_type] || '#d1d5db' }}
+              title={t.utterance_type || ''}
+            />
+            <div className="turn-body">
+              <div className="turn-meta">
+                <span className="turn-speaker">{t.speaker || '미상'}</span>
+                {t.speaker_role && <span className="turn-role">{t.speaker_role}</span>}
+                {t.party && (
+                  <span className="turn-party" style={{ color: PARTY_COLORS[t.party] || '#6b7280' }}>
+                    {t.party}
+                  </span>
+                )}
+                {t.position_type === '정부측' && !t.party && (
+                  <span className="turn-party turn-party--govt">정부측</span>
+                )}
+                <span className={`turn-type-badge turn-type-${t.utterance_type}`}>
+                  {LABEL[t.utterance_type] || '발언'}
+                </span>
+              </div>
+              <p className="turn-preview">{t.content_preview}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
