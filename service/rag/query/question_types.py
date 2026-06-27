@@ -243,41 +243,49 @@ def is_government_role(speaker_role: str) -> bool:
     return any(keyword in (speaker_role or "") for keyword in _GOVT_ROLE_KEYWORDS)
 
 
-def infer_utterance_type(text: str, speaker_role: str = "", position_type: str = "") -> str:
+def infer_utterance_type_with_confidence(
+    text: str, speaker_role: str = "", position_type: str = ""
+) -> tuple[str, float]:
+    """발화유형과 분류 신뢰도(0.0–1.0)를 반환한다."""
     body = (text or "").strip()
     role = speaker_role or ""
 
-    # ── 의사진행 (위원장) ──────────────────────────────────────
     if "위원장" in role and _PROCEDURAL_MARKERS.search(body[:200]):
-        return "procedural"
+        return "procedural", 0.95
 
-    # ── 정부측 / 후보자 ───────────────────────────────────────
     if position_type in {"정부측", "후보자"} or is_government_role(role):
-        # 질의 패턴만 있고 답변 패턴이 없으면 → 반문/설명
-        if _QUESTION_MARKERS.search(body) and not _ANSWER_MARKERS.search(body):
-            return "statement"
-        return "answer"
+        has_q = bool(_QUESTION_MARKERS.search(body))
+        has_a = bool(_ANSWER_MARKERS.search(body))
+        if has_q and not has_a:
+            return "statement", 0.70
+        confidence = 0.92 if has_a else 0.75
+        return "answer", confidence
 
-    # ── 의원 발언 ──────────────────────────────────────────────
-    # 1. 발언 마무리·의사진행 표현이 시작에 있으면 procedural
     if _MEMBER_PROCEDURAL.search(body[:60]):
-        return "procedural"
+        return "procedural", 0.90
 
     tail = body[-400:] if len(body) > 400 else body
 
-    # 2. 촉구형 종결 + 정보 요청 없음 → statement (오분류 방지)
-    if _DEMAND_ONLY_ENDINGS.search(tail) and not _INFO_SEEKING_MARKERS.search(body):
-        return "statement"
+    if _DEMAND_ONLY_ENDINGS.search(tail):
+        has_info = bool(_INFO_SEEKING_MARKERS.search(body))
+        if not has_info:
+            return "statement", 0.85
+        return "question", 0.72
 
-    # 3. 발언 끝부분에 질의 종결 어미가 있으면 question
     if _QUESTION_ENDINGS.search(tail):
-        return "question"
+        has_info = bool(_INFO_SEEKING_MARKERS.search(body))
+        confidence = 0.90 if has_info else 0.72
+        return "question", confidence
 
-    # 4. 본문 어딘가에 기존 질의 마커가 있으면 question (fallback)
     if _QUESTION_MARKERS.search(body):
-        return "question"
+        return "question", 0.55
 
-    return "statement"
+    return "statement", 0.78
+
+
+def infer_utterance_type(text: str, speaker_role: str = "", position_type: str = "") -> str:
+    utype, _ = infer_utterance_type_with_confidence(text, speaker_role, position_type)
+    return utype
 
 
 def infer_chunk_question_type_hints(

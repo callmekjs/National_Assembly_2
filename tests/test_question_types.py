@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence
 
 
 def test_classify_source_check():
@@ -101,3 +101,55 @@ def test_government_answer_unchanged():
         position_type="정부측",
     )
     assert result == "answer"
+
+
+def test_confidence_clear_question_high():
+    utype, conf = infer_utterance_type_with_confidence(
+        "어떤 대책을 갖고 있습니까?", speaker_role="위원", position_type="의원"
+    )
+    assert utype == "question"
+    assert conf >= 0.85
+
+
+def test_confidence_demand_statement_high():
+    utype, conf = infer_utterance_type_with_confidence(
+        "철저한 조사를 부탁드립니다.", speaker_role="위원", position_type="의원"
+    )
+    assert utype == "statement"
+    assert conf >= 0.80
+
+
+def test_confidence_government_with_answer_marker_high():
+    utype, conf = infer_utterance_type_with_confidence(
+        "답변드리겠습니다. 검토 후 제출하겠습니다.",
+        speaker_role="통일부장관", position_type="정부측"
+    )
+    assert utype == "answer"
+    assert conf >= 0.88
+
+
+def test_confidence_government_no_marker_medium():
+    utype, conf = infer_utterance_type_with_confidence(
+        "해당 정책은 지속적으로 진행 중입니다.",
+        speaker_role="외교부장관", position_type="정부측"
+    )
+    assert utype == "answer"
+    assert 0.65 <= conf < 0.90
+
+
+def test_confidence_fallback_question_low():
+    utype, conf = infer_utterance_type_with_confidence(
+        "이 부분이 어떻게 진행되는지 궁금합니다.",
+        speaker_role="위원", position_type="의원"
+    )
+    assert utype == "question"
+    assert conf < 0.80
+
+
+def test_infer_utterance_type_backward_compat():
+    # 기존 infer_utterance_type은 그대로 str 반환
+    result = infer_utterance_type(
+        "어떤 대책을 갖고 있습니까?", speaker_role="위원", position_type="의원"
+    )
+    assert isinstance(result, str)
+    assert result == "question"
