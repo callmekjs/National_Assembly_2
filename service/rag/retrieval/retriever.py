@@ -105,6 +105,8 @@ class Retriever:
         position_type: str | None = None,
         agency: str | None = None,
     ) -> list[dict]:
+        agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
+
         # Multi-query Retrieval
         if use_multi_query:
             from service.rag.retrieval.multi_query import multi_query_search
@@ -114,6 +116,7 @@ class Retriever:
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
                 require_speaker=require_speaker, question_type=question_type,
+                utterance_type=utype_f, agency=agency_f,
             )
             return multi_query_search(self, query, top_k=top_k,
                                       n_variants=multi_query_variants, **search_kwargs)
@@ -127,6 +130,7 @@ class Retriever:
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
                 require_speaker=require_speaker, question_type=question_type,
+                utterance_type=utype_f, agency=agency_f,
             )
             return fusion_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -139,6 +143,7 @@ class Retriever:
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
                 require_speaker=require_speaker, question_type=question_type,
+                utterance_type=utype_f, agency=agency_f,
             )
             return step_back_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -151,13 +156,13 @@ class Retriever:
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
                 require_speaker=require_speaker, question_type=question_type,
+                utterance_type=utype_f, agency=agency_f,
             )
             return hyde_search(self, query, top_k=top_k, **search_kwargs)
 
         expanded_query = self._expand_query(query)
         vector = self.encoder.encode_query(expanded_query)
         df, dt = normalize_meeting_date_range(date_from, date_to)
-        agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
         filters = {
             "committee": committee or "",
             "date_from": df or "",
