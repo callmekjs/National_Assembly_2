@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.etl.transform.chunker_v2 import _build_record, _make_chunk_id, _make_embed_text, _merge_turns
+from service.etl.transform.chunker_v2 import _add_context_window, _build_record, _make_chunk_id, _make_embed_text, _merge_turns
 
 _META = {"meeting_date": "2024-07-17", "committee": "외교통일위원회"}
 
@@ -168,3 +168,21 @@ def test_build_record_importance_score_high_for_govt_answer():
         "20240717_52128_52128",
     )
     assert record["metadata"]["importance_score"] >= 0.30
+
+
+def test_add_context_window_stores_prev_speaker():
+    records = [
+        {"clean_text": "질의입니다.", "speaker": "홍기원", "speaker_role": "위원", "metadata": {}},
+        {"clean_text": "답변드리겠습니다.", "speaker": "조태열", "speaker_role": "장관", "metadata": {}},
+    ]
+    result = _add_context_window(records)
+    assert result[1]["metadata"]["prev_speaker"] == "홍기원"
+    assert result[1]["metadata"]["prev_speaker_role"] == "위원"
+
+
+def test_add_context_window_first_record_has_no_prev_speaker():
+    records = [
+        {"clean_text": "첫 번째 발언.", "speaker": "홍기원", "speaker_role": "위원", "metadata": {}},
+    ]
+    result = _add_context_window(records)
+    assert "prev_speaker" not in result[0]["metadata"]

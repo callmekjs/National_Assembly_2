@@ -233,7 +233,10 @@ def _add_context_window(records: list[dict]) -> list[dict]:
     """각 청크 metadata에 인접 발언 앞 100자를 prev_context / next_context로 추가."""
     for i, rec in enumerate(records):
         if i > 0:
-            rec["metadata"]["prev_context"] = records[i - 1]["clean_text"][:CONTEXT_CHARS]
+            prev = records[i - 1]
+            rec["metadata"]["prev_context"] = prev["clean_text"][:CONTEXT_CHARS]
+            rec["metadata"]["prev_speaker"] = prev.get("speaker", "")
+            rec["metadata"]["prev_speaker_role"] = prev.get("speaker_role", "")
         if i < len(records) - 1:
             rec["metadata"]["next_context"] = records[i + 1]["clean_text"][:CONTEXT_CHARS]
     return records
