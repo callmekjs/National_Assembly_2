@@ -35,6 +35,20 @@ def _apply_importance_boost(
     return sorted(hits, key=lambda x: -float(x.get("hybrid_score", 0.0)))
 
 
+def _resolve_agency_filter(
+    query: str,
+    question_type: str | None,
+    agency: str | None,
+    utterance_type: str | None,
+) -> tuple[str, str]:
+    if (question_type or "").strip() != "agency_answer_tracking":
+        return agency or "", utterance_type or ""
+    from service.rag.query.question_types import extract_agency_from_query
+    resolved_agency = agency or extract_agency_from_query(query) or ""
+    resolved_utype = utterance_type or "answer"
+    return resolved_agency, resolved_utype
+
+
 def _rrf_merge(
     vector_hits: list[dict],
     fts_hits: list[dict],
@@ -143,6 +157,7 @@ class Retriever:
         expanded_query = self._expand_query(query)
         vector = self.encoder.encode_query(expanded_query)
         df, dt = normalize_meeting_date_range(date_from, date_to)
+        agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
         filters = {
             "committee": committee or "",
             "date_from": df or "",
@@ -150,10 +165,10 @@ class Retriever:
             "speaker": speaker or "",
             "require_speaker": require_speaker,
             "question_type": question_type or "",
-            "utterance_type": utterance_type or "",
+            "utterance_type": utype_f,
             "party": party or "",
             "position_type": position_type or "",
-            "agency": agency or "",
+            "agency": agency_f,
             # qa_pair_extract 질문 유형이면 qa_pair 청크만, 그 외엔 utterance 청크만
             "chunk_type": "qa_pair" if (question_type or "").strip() == "qa_pair_extract" else "utterance",
         }
@@ -417,6 +432,7 @@ class Retriever:
         _RERANK_POOL = 8
 
         df, dt = normalize_meeting_date_range(date_from, date_to)
+        agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
         filters = {
             "committee": committee or "",
             "date_from": df or "",
@@ -424,10 +440,10 @@ class Retriever:
             "speaker": speaker or "",
             "require_speaker": require_speaker,
             "question_type": question_type or "",
-            "utterance_type": utterance_type or "",
+            "utterance_type": utype_f,
             "party": party or "",
             "position_type": position_type or "",
-            "agency": agency or "",
+            "agency": agency_f,
             # qa_pair_extract 질문 유형이면 qa_pair 청크만, 그 외엔 utterance 청크만
             "chunk_type": "qa_pair" if (question_type or "").strip() == "qa_pair_extract" else "utterance",
         }

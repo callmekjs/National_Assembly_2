@@ -102,3 +102,32 @@ def test_apply_importance_boost_noop_for_issue_extract():
     ]
     result = _apply_importance_boost(hits, question_type="issue_extract")
     assert result[0]["hybrid_score"] == 0.80
+
+
+from service.rag.retrieval.retriever import _resolve_agency_filter
+
+
+def test_resolve_agency_filter_extracts_agency_and_forces_answer():
+    agency, utype = _resolve_agency_filter(
+        "외교부가 재외국민 보호에 대해 뭐라 했나?", "agency_answer_tracking", None, None
+    )
+    assert agency == "외교부"
+    assert utype == "answer"
+
+
+def test_resolve_agency_filter_noop_for_topic_search():
+    agency, utype = _resolve_agency_filter("외교부 정책", "topic_search", None, None)
+    assert agency == ""
+    assert utype == ""
+
+
+def test_resolve_agency_filter_preserves_explicit_agency():
+    agency, utype = _resolve_agency_filter("질의", "agency_answer_tracking", "통일부", None)
+    assert agency == "통일부"
+    assert utype == "answer"
+
+
+def test_resolve_agency_filter_no_match_returns_empty_agency():
+    agency, utype = _resolve_agency_filter("일반 정책 질의", "agency_answer_tracking", None, None)
+    assert agency == ""
+    assert utype == "answer"
