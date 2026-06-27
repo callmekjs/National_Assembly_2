@@ -153,6 +153,19 @@ _IMPORTANCE_FORMAL = re.compile(
     r"|공식적으로|정식으로"
 )
 
+_PHASE_OPENING = re.compile(
+    r"개의합니다|회의를\s*시작|의사일정\s*상정|위원회를\s*개의|개의를\s*선언|개회합니다"
+)
+
+_PHASE_PRESENTATION = re.compile(
+    r"현안\s*보고|업무\s*보고|결과\s*보고|보고\s*드리겠습니다|다음과\s*같이\s*보고|주요\s*현안"
+)
+
+_PHASE_CLOSING = re.compile(
+    r"산회합니다|산회를\s*선언|이상으로\s*마치|회의를\s*마치|폐회합니다"
+    r"|의결하겠습니다|가결되었습니다|부결되었습니다"
+)
+
 # 한국어 질의 종결 패턴 — 문장 끝에 등장하는 실제 질의 어미/요청어
 _QUESTION_ENDINGS = re.compile(
     r"(습니까|입니까|인가요|나요|않습니까|없습니까|됩니까|되나요|되십니까"
@@ -414,3 +427,20 @@ def infer_importance_score(
     if utterance_type == "question" and position_type in ("의원", "위원장"):
         score += 0.10
     return min(round(score, 2), 1.0)
+
+
+def infer_meeting_phase(text: str, utterance_type: str = "") -> str:
+    body = (text or "").strip()
+    if not body:
+        return "unknown"
+    if _PHASE_OPENING.search(body):
+        return "opening"
+    if _PHASE_CLOSING.search(body):
+        return "closing"
+    if _PHASE_PRESENTATION.search(body) and utterance_type != "question":
+        return "presentation"
+    if utterance_type in ("question", "answer"):
+        return "qa"
+    if utterance_type == "procedural":
+        return "procedural"
+    return "unknown"

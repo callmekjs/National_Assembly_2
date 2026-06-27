@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score, infer_importance_score, extract_agency_from_query
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score, infer_importance_score, extract_agency_from_query, infer_meeting_phase
 
 
 def test_classify_source_check():
@@ -239,3 +239,44 @@ def test_extract_agency_returns_none_for_empty():
 def test_extract_agency_first_match_wins():
     result = extract_agency_from_query("외교부와 통일부의 협력 방안")
     assert result == "외교부"
+
+
+def test_phase_opening():
+    assert infer_meeting_phase("개의합니다. 오늘 회의를 시작하겠습니다.") == "opening"
+
+
+def test_phase_opening_variant():
+    assert infer_meeting_phase("위원회를 개의하겠습니다. 의사일정 상정합니다.") == "opening"
+
+
+def test_phase_closing_산회():
+    assert infer_meeting_phase("이상으로 회의를 마치겠습니다. 산회합니다.") == "closing"
+
+
+def test_phase_closing_의결():
+    assert infer_meeting_phase("가결되었습니다. 의결합니다.") == "closing"
+
+
+def test_phase_presentation_with_answer():
+    assert infer_meeting_phase("현안 보고 드리겠습니다. 다음과 같이 보고합니다.", utterance_type="answer") == "presentation"
+
+
+def test_phase_presentation_text_but_question_type_is_qa():
+    # presentation 텍스트라도 utterance_type=question이면 qa
+    assert infer_meeting_phase("현안 보고 드리겠습니다.", utterance_type="question") == "qa"
+
+
+def test_phase_qa_question():
+    assert infer_meeting_phase("이 사안에 대해 어떻게 생각하십니까?", utterance_type="question") == "qa"
+
+
+def test_phase_qa_answer():
+    assert infer_meeting_phase("답변드리겠습니다. 검토하겠습니다.", utterance_type="answer") == "qa"
+
+
+def test_phase_procedural():
+    assert infer_meeting_phase("잠깐 정회하겠습니다.", utterance_type="procedural") == "procedural"
+
+
+def test_phase_unknown_empty():
+    assert infer_meeting_phase("") == "unknown"
