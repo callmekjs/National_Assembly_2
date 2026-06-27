@@ -109,3 +109,24 @@ def test_merge_preserves_first_turn_index():
     turns = [_turn("짧음", turn_index=10), _turn("짧음2", turn_index=11)]
     merged = _merge_turns(turns)
     assert merged[0]["turn_index"] == 10
+
+
+def test_build_record_has_utterance_type_confidence():
+    record = _build_record(
+        _turn("어떤 대책을 갖고 있습니까?", speaker="이재정", role="위원"),
+        "20240717_52128_52128",
+    )
+    assert "utterance_type_confidence" in record["metadata"]
+    conf = record["metadata"]["utterance_type_confidence"]
+    assert isinstance(conf, float)
+    assert 0.0 <= conf <= 1.0
+
+
+def test_demand_statement_has_high_confidence():
+    record = _build_record(
+        _turn("철저한 대책 마련을 부탁드립니다.", speaker="이재정", role="위원"),
+        "20240717_52128_52128",
+    )
+    meta = record["metadata"]
+    assert meta["utterance_type"] == "statement"
+    assert meta["utterance_type_confidence"] >= 0.80

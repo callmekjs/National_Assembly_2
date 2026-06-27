@@ -144,6 +144,48 @@ def test_embed_text_contains_meta():
     assert "조태열" in embed
 
 
+# ── 신뢰도 필터 테스트 ───────────────────────────────────────────
+def test_low_confidence_question_excluded_from_pairs():
+    """confidence < 0.5인 question은 statement 처리되어 QA 쌍 미생성."""
+    turns = [
+        _turn("SRC1", 0, "question", "이재정", "위원", "의원",
+              "잘 부탁드립니다."),
+        _turn("SRC1", 1, "answer", "조태열", "장관", "정부측",
+              "답변드리겠습니다."),
+    ]
+    # confidence 0.3 주입
+    turns[0]["metadata"]["utterance_type_confidence"] = 0.3
+    pairs = pair_qa_chunks(turns)
+    assert len(pairs) == 0
+
+
+def test_high_confidence_question_included_in_pairs():
+    """confidence >= 0.5인 question은 정상 QA 쌍 생성."""
+    turns = [
+        _turn("SRC1", 0, "question", "이재정", "위원", "의원",
+              "어떤 대책을 갖고 있습니까?"),
+        _turn("SRC1", 1, "answer", "조태열", "장관", "정부측",
+              "검토 후 조치하겠습니다."),
+    ]
+    turns[0]["metadata"]["utterance_type_confidence"] = 0.90
+    pairs = pair_qa_chunks(turns)
+    assert len(pairs) == 1
+
+
+def test_missing_confidence_defaults_to_include():
+    """utterance_type_confidence 필드 없으면 기본값 1.0 → 정상 포함."""
+    turns = [
+        _turn("SRC1", 0, "question", "이재정", "위원", "의원",
+              "어떤 대책을 갖고 있습니까?"),
+        _turn("SRC1", 1, "answer", "조태열", "장관", "정부측",
+              "검토 후 조치하겠습니다."),
+    ]
+    # confidence 필드 없음 (기존 데이터 호환)
+    assert "utterance_type_confidence" not in turns[0]["metadata"]
+    pairs = pair_qa_chunks(turns)
+    assert len(pairs) == 1
+
+
 # ── 통합: main() 함수가 JSONL 파일을 읽고 출력 생성 ─────────────
 def test_main_creates_output(tmp_path, monkeypatch):
     import json

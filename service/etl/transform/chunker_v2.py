@@ -8,6 +8,7 @@ from service.rag.query.question_types import (
     infer_agency,
     infer_chunk_question_type_hints,
     infer_utterance_type,
+    infer_utterance_type_with_confidence,
 )
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -92,11 +93,13 @@ def _enrich_speaker_metadata(meta: dict, speaker: str, speaker_role: str) -> Non
 def _enrich_question_type_metadata(meta: dict, text: str, speaker: str, speaker_role: str) -> None:
     """질문 유형 라우팅과 유형별 검색에 쓰는 lightweight metadata를 추가한다."""
     meta["agency"] = infer_agency(speaker_role, text)
-    meta["utterance_type"] = infer_utterance_type(
+    utype, confidence = infer_utterance_type_with_confidence(
         text,
         speaker_role=speaker_role,
         position_type=str(meta.get("position_type") or ""),
     )
+    meta["utterance_type"] = utype
+    meta["utterance_type_confidence"] = round(confidence, 2)
     meta["question_type_hints"] = infer_chunk_question_type_hints(
         text,
         speaker=speaker,

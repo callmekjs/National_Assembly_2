@@ -9,6 +9,7 @@ OUT_DIR       = ROOT / "data" / "v2" / "transform" / "qa_pairs"
 OUT_FILE      = OUT_DIR / "qa_pairs_v2.jsonl"
 
 MAX_GAP = 8  # turn_index 갭이 이보다 크면 Q-A 연결 단절로 간주
+CONFIDENCE_THRESHOLD = 0.5  # 이 미만인 question은 statement로 처리
 
 
 def _count_tokens(text: str) -> int:
@@ -160,7 +161,11 @@ def _pair_single_source(source_id: str, chunks: list[dict]) -> list[dict]:
     prev_chunk: dict | None = None
 
     for chunk in utterance_chunks:
-        utterance_type = chunk.get("metadata", {}).get("utterance_type", "statement")
+        meta = chunk.get("metadata", {})
+        utterance_type = meta.get("utterance_type", "statement")
+        confidence = float(meta.get("utterance_type_confidence", 1.0))
+        if utterance_type == "question" and confidence < CONFIDENCE_THRESHOLD:
+            utterance_type = "statement"
         gap = _gap(prev_chunk, chunk)
 
         # ── 갭 초과 처리 ────────────────────────────────────────────
