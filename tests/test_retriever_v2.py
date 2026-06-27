@@ -53,6 +53,7 @@ def test_top_n_limits_output():
 from service.rag.retrieval.retriever import (
     _parse_turn_index,
     _merge_adjacent_hits,
+    _apply_chronological_sort,
     _ADJACENT_GAP,
     _MERGE_MAX_CHARS,
 )
@@ -215,6 +216,70 @@ def test_search_signature_has_use_smart_merge():
     sig = inspect.signature(Retriever.search)
     assert "use_smart_merge" in sig.parameters
     assert sig.parameters["use_smart_merge"].default is True
+
+
+def _dated_hit(date: str, turn: int, score: float = 0.5) -> dict:
+    return {
+        "chunk_id": f"src_{date.replace('-', '')}_turn_{turn:04d}",
+        "source_id": f"src_{date.replace('-', '')}",
+        "content": f"발언 {date} turn={turn}",
+        "hybrid_score": score,
+        "metadata": {"meeting_date": date},
+    }
+
+
+def test_chronological_sort_comparison_orders_by_date():
+    hits = [
+        _dated_hit("2024-06-01", 1, score=0.9),
+        _dated_hit("2024-03-01", 2, score=0.5),
+    ]
+    result = _apply_chronological_sort(hits, question_type="comparison")
+    assert result[0]["metadata"]["meeting_date"] == "2024-03-01"
+    assert result[1]["metadata"]["meeting_date"] == "2024-06-01"
+
+
+def test_chronological_sort_meeting_summary_orders_by_date_then_turn():
+    hits = [
+        _dated_hit("2024-03-01", 5, score=0.9),
+        _dated_hit("2024-03-01", 2, score=0.5),
+    ]
+    result = _apply_chronological_sort(hits, question_type="meeting_summary")
+    assert result[0]["chunk_id"].endswith("_turn_0002")
+    assert result[1]["chunk_id"].endswith("_turn_0005")
+
+
+def test_chronological_sort_noop_for_topic_search():
+    hits = [
+        _dated_hit("2024-06-01", 1, score=0.9),
+        _dated_hit("2024-03-01", 2, score=0.5),
+    ]
+    result = _apply_chronological_sort(hits, question_type="topic_search")
+    # 순서 그대로 유지 (2024-06 first)
+    assert result[0]["metadata"]["meeting_date"] == "2024-06-01"
+
+
+def test_chronological_sort_noop_for_none_question_type():
+    hits = [
+        _dated_hit("2024-06-01", 1, score=0.9),
+        _dated_hit("2024-03-01", 2, score=0.5),
+    ]
+    result = _apply_chronological_sort(hits, question_type=None)
+    assert result[0]["metadata"]["meeting_date"] == "2024-06-01"
+
+
+def test_chronological_sort_handles_missing_date():
+    hits = [
+        {"chunk_id": "src_turn_0001", "source_id": "src", "content": "A", "hybrid_score": 0.9, "metadata": {}},
+        _dated_hit("2024-03-01", 2, score=0.5),
+    ]
+    # date 없는 항목은 "" → 앞으로 정렬됨 (빈 문자열이 날짜보다 앞)
+    result = _apply_chronological_sort(hits, question_type="comparison")
+    assert len(result) == 2  # 개수 변화 없음
+
+
+def test_chronological_sort_empty_hits():
+    result = _apply_chronological_sort([], question_type="comparison")
+    assert result == []
 
 
 def test_search_v2_signature_has_use_smart_merge():

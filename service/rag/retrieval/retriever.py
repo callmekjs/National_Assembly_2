@@ -143,6 +143,19 @@ def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dic
     return result
 
 
+def _apply_chronological_sort(
+    hits: list[dict], question_type: str | None
+) -> list[dict]:
+    """comparison/meeting_summary 질문 유형에서 (회의일, turn_index) 오름차순으로 재정렬."""
+    if (question_type or "").strip() not in {"comparison", "meeting_summary"}:
+        return hits
+    def _key(h: dict) -> tuple[str, int]:
+        date = (h.get("metadata") or {}).get("meeting_date") or ""
+        tidx = _parse_turn_index(str(h.get("chunk_id") or "")) or 0
+        return (date, tidx)
+    return sorted(hits, key=_key)
+
+
 def _rrf_merge(
     vector_hits: list[dict],
     fts_hits: list[dict],
@@ -357,6 +370,9 @@ class Retriever:
         # Smart Chunk Merge — 인접 발언 병합
         if use_smart_merge and out:
             out = _merge_adjacent_hits(out)
+
+        # Chronological Sort — comparison/meeting_summary 시계열 정렬
+        out = _apply_chronological_sort(out, question_type=question_type)
 
         # Parent Document Retrieval — 검색 후 문맥 확장
         if use_parent_doc and out:
@@ -601,4 +617,6 @@ class Retriever:
         # Smart Chunk Merge — 인접 발언 병합
         if use_smart_merge and merged:
             merged = _merge_adjacent_hits(merged)
+        # Chronological Sort — comparison/meeting_summary 시계열 정렬
+        merged = _apply_chronological_sort(merged, question_type=question_type)
         return self._enrich_with_context(merged)
