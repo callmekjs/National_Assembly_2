@@ -186,3 +186,29 @@ def test_add_context_window_first_record_has_no_prev_speaker():
     ]
     result = _add_context_window(records)
     assert "prev_speaker" not in result[0]["metadata"]
+
+
+def test_meeting_phase_opening():
+    turn = _turn("개의합니다. 회의를 시작하겠습니다.", "위원장", "위원장", 0)
+    rec = _build_record(turn, "src001")
+    assert rec["metadata"]["meeting_phase"] == "opening"
+
+
+def test_meeting_phase_qa_answer():
+    turn = _turn("답변드리겠습니다. 검토하겠습니다.", "홍길동 장관", "장관", 5)
+    rec = _build_record(turn, "src001")
+    assert rec["metadata"]["meeting_phase"] == "qa"
+
+
+def test_meeting_phase_presentation():
+    turn = _turn("현안 보고 드리겠습니다. 주요 현안을 설명합니다.", "홍길동 장관", "장관", 2)
+    rec = _build_record(turn, "src001")
+    assert rec["metadata"]["meeting_phase"] in ("presentation", "qa")  # answer 타입이면 presentation
+
+
+def test_meeting_phase_unknown():
+    turn = _turn("알겠습니다.", "김위원", "위원", 10)
+    rec = _build_record(turn, "src001")
+    assert rec["metadata"]["meeting_phase"] in ("qa", "unknown", "procedural", "statement")
+    # 단: meeting_phase 키 자체는 반드시 존재해야 함
+    assert "meeting_phase" in rec["metadata"]

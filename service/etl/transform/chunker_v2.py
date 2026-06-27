@@ -9,6 +9,7 @@ from service.rag.query.question_types import (
     infer_chunk_question_type_hints,
     infer_importance_score,
     infer_issue_score,
+    infer_meeting_phase,
     infer_utterance_type_with_confidence,
 )
 
@@ -111,6 +112,7 @@ def _enrich_question_type_metadata(meta: dict, text: str, speaker: str, speaker_
         utterance_type=utype,
         position_type=str(meta.get("position_type") or ""),
     )
+    meta["meeting_phase"] = infer_meeting_phase(text, utype)
     meta["question_type_hints"] = infer_chunk_question_type_hints(
         text,
         speaker=speaker,
