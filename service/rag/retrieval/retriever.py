@@ -73,7 +73,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
-                require_speaker=require_speaker,
+                require_speaker=require_speaker, question_type=question_type,
             )
             return multi_query_search(self, query, top_k=top_k,
                                       n_variants=multi_query_variants, **search_kwargs)
@@ -86,7 +86,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
-                require_speaker=require_speaker,
+                require_speaker=require_speaker, question_type=question_type,
             )
             return fusion_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -98,7 +98,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
-                require_speaker=require_speaker,
+                require_speaker=require_speaker, question_type=question_type,
             )
             return step_back_search(self, query, top_k=top_k, **search_kwargs)
 
@@ -110,7 +110,7 @@ class Retriever:
                 committee=committee, date_from=date_from, date_to=date_to,
                 include_metadata=include_metadata, use_reranker=use_reranker,
                 balance_speakers=balance_speakers, candidate_multiplier=candidate_multiplier,
-                require_speaker=require_speaker,
+                require_speaker=require_speaker, question_type=question_type,
             )
             return hyde_search(self, query, top_k=top_k, **search_kwargs)
 
