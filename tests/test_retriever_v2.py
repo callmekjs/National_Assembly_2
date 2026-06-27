@@ -61,7 +61,7 @@ def test_rrf_score_correct_formula():
     assert abs(result[0]["rrf_score"] - 1 / 61) < 1e-6
 
 
-from service.rag.retrieval.retriever import _apply_issue_boost, _ISSUE_SCORE_BOOST
+from service.rag.retrieval.retriever import _apply_issue_boost, _ISSUE_SCORE_BOOST, _apply_importance_boost, _IMPORTANCE_BOOST
 
 
 def test_apply_issue_boost_reorders_for_issue_extract():
@@ -81,4 +81,24 @@ def test_apply_issue_boost_noop_for_other_types():
         {"hybrid_score": 0.70, "metadata": {"issue_score": 1.0}},
     ]
     result = _apply_issue_boost(hits, question_type="topic_search")
+    assert result[0]["hybrid_score"] == 0.80
+
+
+def test_apply_importance_boost_reorders_for_topic_search():
+    hits = [
+        {"hybrid_score": 0.80, "metadata": {"importance_score": 0.0}},
+        {"hybrid_score": 0.72, "metadata": {"importance_score": 1.0}},
+    ]
+    result = _apply_importance_boost(hits, question_type="topic_search")
+    # second hit: 0.72 + 0.10 * 1.0 = 0.82 > 0.80 → moves to first
+    assert result[0]["metadata"]["importance_score"] == 1.0
+    assert result[0]["hybrid_score"] == pytest.approx(0.82)
+
+
+def test_apply_importance_boost_noop_for_issue_extract():
+    hits = [
+        {"hybrid_score": 0.80, "metadata": {"importance_score": 0.0}},
+        {"hybrid_score": 0.72, "metadata": {"importance_score": 1.0}},
+    ]
+    result = _apply_importance_boost(hits, question_type="issue_extract")
     assert result[0]["hybrid_score"] == 0.80

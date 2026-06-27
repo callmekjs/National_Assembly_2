@@ -10,6 +10,7 @@ from service.rag.vectorstore.pgvector_store import PgVectorStore
 
 
 _ISSUE_SCORE_BOOST = 0.15
+_IMPORTANCE_BOOST = 0.10
 
 
 def _apply_issue_boost(
@@ -20,6 +21,17 @@ def _apply_issue_boost(
     for hit in hits:
         issue_score = float((hit.get("metadata") or {}).get("issue_score", 0.0))
         hit["hybrid_score"] = float(hit.get("hybrid_score", 0.0)) + _ISSUE_SCORE_BOOST * issue_score
+    return sorted(hits, key=lambda x: -float(x.get("hybrid_score", 0.0)))
+
+
+def _apply_importance_boost(
+    hits: list[dict], question_type: str | None = None
+) -> list[dict]:
+    if (question_type or "").strip() != "topic_search":
+        return hits
+    for hit in hits:
+        importance_score = float((hit.get("metadata") or {}).get("importance_score", 0.0))
+        hit["hybrid_score"] = float(hit.get("hybrid_score", 0.0)) + _IMPORTANCE_BOOST * importance_score
     return sorted(hits, key=lambda x: -float(x.get("hybrid_score", 0.0)))
 
 
@@ -186,6 +198,7 @@ class Retriever:
         )
         out = self._dedupe_by_chunk_id(out)
         out = _apply_issue_boost(out, question_type=question_type)
+        out = _apply_importance_boost(out, question_type=question_type)
 
         # Score Normalization — min-max 정규화 후 앙상블 재정렬
         if use_score_norm and out:
@@ -444,6 +457,7 @@ class Retriever:
         for hit in merged:
             hit["hybrid_score"] = hit.get("rrf_score", 0.0)
         merged = _apply_issue_boost(merged, question_type=question_type)
+        merged = _apply_importance_boost(merged, question_type=question_type)
 
         if use_neural_reranker and merged:
             from service.rag.retrieval.reranker import create_neural_reranker
