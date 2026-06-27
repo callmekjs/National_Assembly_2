@@ -49,6 +49,90 @@ def _resolve_agency_filter(
     return resolved_agency, resolved_utype
 
 
+_ADJACENT_GAP = 2
+_MERGE_MAX_CHARS = 1200
+
+
+def _parse_turn_index(chunk_id: str) -> int | None:
+    m = re.search(r"_turn_(\d{4})$", chunk_id or "")
+    return int(m.group(1)) if m else None
+
+
+def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dict]:
+    """같은 source_id에서 turn_index 차이가 gap 이하인 인접 청크를 병합."""
+    if len(hits) < 2:
+        return list(hits)
+
+    # (source_id, turn_index) → hits 내 인덱스
+    turn_map: dict[tuple[str, int], int] = {}
+    for i, h in enumerate(hits):
+        sid = h.get("source_id") or ""
+        tidx = _parse_turn_index(str(h.get("chunk_id") or ""))
+        if sid and tidx is not None:
+            turn_map[(sid, tidx)] = i
+
+    consumed: set[int] = set()
+    result: list[dict] = []
+
+    for i, hit in enumerate(hits):
+        if i in consumed:
+            continue
+
+        sid = hit.get("source_id") or ""
+        tidx = _parse_turn_index(str(hit.get("chunk_id") or ""))
+
+        if not sid or tidx is None:
+            result.append(hit)
+            continue
+
+        # 가장 가까운 un-consumed 이웃 탐색
+        best_j: int | None = None
+        best_dist = gap + 1
+        for delta in range(1, gap + 1):
+            for cand_tidx in (tidx + delta, tidx - delta):
+                j = turn_map.get((sid, cand_tidx))
+                if j is not None and j != i and j not in consumed:
+                    d = abs(cand_tidx - tidx)
+                    if d < best_dist:
+                        best_j, best_dist = j, d
+            if best_j is not None:
+                break
+
+        if best_j is None:
+            result.append(hit)
+            continue
+
+        hit_b = hits[best_j]
+        text_a = hit.get("content") or ""
+        text_b = hit_b.get("content") or ""
+
+        if len(text_a) + len(text_b) + 2 > _MERGE_MAX_CHARS:
+            result.append(hit)
+            continue
+
+        # 시간순(turn_index 오름차순)으로 합치기
+        tidx_b = _parse_turn_index(str(hit_b.get("chunk_id") or ""))
+        if tidx_b is not None and tidx_b < tidx:
+            content = text_b.rstrip() + "\n\n" + text_a.lstrip()
+        else:
+            content = text_a.rstrip() + "\n\n" + text_b.lstrip()
+
+        merged = dict(hit)
+        merged["content"] = content
+        merged["hybrid_score"] = max(
+            float(hit.get("hybrid_score", 0.0)),
+            float(hit_b.get("hybrid_score", 0.0)),
+        )
+        merged["_merged_chunk_ids"] = [
+            hit.get("chunk_id", ""),
+            hit_b.get("chunk_id", ""),
+        ]
+        consumed.add(best_j)
+        result.append(merged)
+
+    return result
+
+
 def _rrf_merge(
     vector_hits: list[dict],
     fts_hits: list[dict],

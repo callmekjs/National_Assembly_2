@@ -50,6 +50,80 @@ def test_top_n_limits_output():
     assert len(result) == 5
 
 
+from service.rag.retrieval.retriever import (
+    _parse_turn_index,
+    _merge_adjacent_hits,
+    _ADJACENT_GAP,
+    _MERGE_MAX_CHARS,
+)
+
+
+def _hit_merge(source_id: str, turn: int, content: str = "내용", score: float = 0.5) -> dict:
+    return {
+        "chunk_id": f"{source_id}_turn_{turn:04d}",
+        "source_id": source_id,
+        "content": content,
+        "hybrid_score": score,
+    }
+
+
+def test_parse_turn_index_standard():
+    assert _parse_turn_index("20240717_52128_52128_turn_0003") == 3
+
+
+def test_parse_turn_index_none_for_qa():
+    assert _parse_turn_index("20240717_52128_52128_qa_0001") is None
+
+
+def test_parse_turn_index_none_for_empty():
+    assert _parse_turn_index("") is None
+
+
+def test_merge_adjacent_two_hits():
+    hits = [_hit_merge("src", 1, "A내용", 0.9), _hit_merge("src", 2, "B내용", 0.7)]
+    result = _merge_adjacent_hits(hits)
+    assert len(result) == 1
+    assert "A내용" in result[0]["content"]
+    assert "B내용" in result[0]["content"]
+    assert result[0]["hybrid_score"] == 0.9
+    assert result[0]["_merged_chunk_ids"] == ["src_turn_0001", "src_turn_0002"]
+
+
+def test_merge_gap_beyond_threshold_not_merged():
+    hits = [_hit_merge("src", 1, "A", 0.9), _hit_merge("src", 4, "B", 0.7)]  # gap=3 > _ADJACENT_GAP=2
+    result = _merge_adjacent_hits(hits)
+    assert len(result) == 2
+
+
+def test_merge_different_source_not_merged():
+    hits = [_hit_merge("srcA", 1, "A"), _hit_merge("srcB", 2, "B")]
+    result = _merge_adjacent_hits(hits)
+    assert len(result) == 2
+
+
+def test_merge_chronological_order():
+    # hit B (turn 3) ranked higher but has earlier turn than hit A (turn 5)
+    hits = [_hit_merge("src", 5, "나중발언", 0.9), _hit_merge("src", 3, "이전발언", 0.7)]
+    result = _merge_adjacent_hits(hits, gap=2)
+    assert len(result) == 1
+    assert result[0]["content"].index("이전발언") < result[0]["content"].index("나중발언")
+
+
+def test_merge_max_chars_exceeded_not_merged():
+    long_a = "가" * 700
+    long_b = "나" * 700
+    hits = [_hit_merge("src", 1, long_a), _hit_merge("src", 2, long_b)]
+    result = _merge_adjacent_hits(hits)
+    assert len(result) == 2
+
+
+def test_merge_single_hit_unchanged():
+    hits = [_hit_merge("src", 1, "혼자")]
+    result = _merge_adjacent_hits(hits)
+    assert len(result) == 1
+    assert result[0]["content"] == "혼자"
+
+
 def test_rrf_score_field_present():
     result = _rrf_merge([_hit("A")], [])
     assert "rrf_score" in result[0]
