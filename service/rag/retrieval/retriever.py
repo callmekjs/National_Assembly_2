@@ -71,27 +71,28 @@ def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dic
         if sid and tidx is not None:
             turn_map[(sid, tidx)] = i
 
-    consumed: set[int] = set()
+    used: set[int] = set()
     result: list[dict] = []
 
     for i, hit in enumerate(hits):
-        if i in consumed:
+        if i in used:
             continue
 
         sid = hit.get("source_id") or ""
         tidx = _parse_turn_index(str(hit.get("chunk_id") or ""))
 
         if not sid or tidx is None:
+            used.add(i)
             result.append(hit)
             continue
 
-        # 가장 가까운 un-consumed 이웃 탐색
+        # 가장 가까운 un-used 이웃 탐색
         best_j: int | None = None
         best_dist = gap + 1
         for delta in range(1, gap + 1):
             for cand_tidx in (tidx + delta, tidx - delta):
                 j = turn_map.get((sid, cand_tidx))
-                if j is not None and j != i and j not in consumed:
+                if j is not None and j != i and j not in used:
                     d = abs(cand_tidx - tidx)
                     if d < best_dist:
                         best_j, best_dist = j, d
@@ -99,6 +100,7 @@ def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dic
                 break
 
         if best_j is None:
+            used.add(i)
             result.append(hit)
             continue
 
@@ -107,6 +109,7 @@ def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dic
         text_b = hit_b.get("content") or ""
 
         if len(text_a) + len(text_b) + 2 > _MERGE_MAX_CHARS:
+            used.add(i)
             result.append(hit)
             continue
 
@@ -127,7 +130,14 @@ def _merge_adjacent_hits(hits: list[dict], gap: int = _ADJACENT_GAP) -> list[dic
             hit.get("chunk_id", ""),
             hit_b.get("chunk_id", ""),
         ]
-        consumed.add(best_j)
+        # Fix I4: update next_context to hit_b's next_context (not hit_a's which points to hit_b's text)
+        merged_meta = dict(hit.get("metadata") or {})
+        merged_meta["next_context"] = (hit_b.get("metadata") or {}).get("next_context", "")
+        merged["metadata"] = merged_meta
+        # Fix I5: speaker is ambiguous in merged chunk (may span Q→A turns)
+        merged["speaker"] = ""
+        used.add(best_j)
+        used.add(i)
         result.append(merged)
 
     return result
@@ -203,8 +213,11 @@ class Retriever:
                 require_speaker=require_speaker, question_type=question_type,
                 utterance_type=utype_f, agency=agency_f,
             )
-            return multi_query_search(self, query, top_k=top_k,
-                                      n_variants=multi_query_variants, **search_kwargs)
+            result = multi_query_search(self, query, top_k=top_k,
+                                        n_variants=multi_query_variants, **search_kwargs)
+            if use_smart_merge and result:
+                result = _merge_adjacent_hits(result)
+            return result
 
         # Fusion Retrieval (벡터 + BM25 RRF)
         if use_fusion:
@@ -217,7 +230,10 @@ class Retriever:
                 require_speaker=require_speaker, question_type=question_type,
                 utterance_type=utype_f, agency=agency_f,
             )
-            return fusion_search(self, query, top_k=top_k, **search_kwargs)
+            result = fusion_search(self, query, top_k=top_k, **search_kwargs)
+            if use_smart_merge and result:
+                result = _merge_adjacent_hits(result)
+            return result
 
         # Step-back Prompting
         if use_step_back:
@@ -230,7 +246,10 @@ class Retriever:
                 require_speaker=require_speaker, question_type=question_type,
                 utterance_type=utype_f, agency=agency_f,
             )
-            return step_back_search(self, query, top_k=top_k, **search_kwargs)
+            result = step_back_search(self, query, top_k=top_k, **search_kwargs)
+            if use_smart_merge and result:
+                result = _merge_adjacent_hits(result)
+            return result
 
         # HyDE
         if use_hyde:
@@ -243,7 +262,10 @@ class Retriever:
                 require_speaker=require_speaker, question_type=question_type,
                 utterance_type=utype_f, agency=agency_f,
             )
-            return hyde_search(self, query, top_k=top_k, **search_kwargs)
+            result = hyde_search(self, query, top_k=top_k, **search_kwargs)
+            if use_smart_merge and result:
+                result = _merge_adjacent_hits(result)
+            return result
 
         expanded_query = self._expand_query(query)
         vector = self.encoder.encode_query(expanded_query)
