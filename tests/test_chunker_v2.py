@@ -130,3 +130,22 @@ def test_demand_statement_has_high_confidence():
     meta = record["metadata"]
     assert meta["utterance_type"] == "statement"
     assert meta["utterance_type_confidence"] >= 0.80
+
+
+def test_build_record_has_issue_score():
+    record = _build_record(
+        _turn("예산 낭비와 비리가 쟁점입니다.", speaker="이재정", role="위원"),
+        "20240717_52128_52128",
+    )
+    assert "issue_score" in record["metadata"]
+    score = record["metadata"]["issue_score"]
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+
+
+def test_build_record_issue_score_high_for_issue_text():
+    record = _build_record(
+        _turn("예산 낭비와 비리 문제가 쟁점이 됩니다.", speaker="이재정", role="위원"),
+        "20240717_52128_52128",
+    )
+    assert record["metadata"]["issue_score"] >= 0.50
