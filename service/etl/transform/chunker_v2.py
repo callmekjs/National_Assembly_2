@@ -7,7 +7,6 @@ from service.rag.query.question_types import (
     embed_hint_labels,
     infer_agency,
     infer_chunk_question_type_hints,
-    infer_utterance_type,
     infer_utterance_type_with_confidence,
 )
 

@@ -18,7 +18,7 @@ load_dotenv(ROOT / ".env")
 
 import psycopg2
 from psycopg2.extras import execute_values
-from service.rag.query.question_types import infer_utterance_type, infer_chunk_question_type_hints
+from service.rag.query.question_types import infer_utterance_type, infer_utterance_type_with_confidence, infer_chunk_question_type_hints
 
 FETCH_SQL = """
 SELECT chunk_id, clean_text, speaker, speaker_role,
@@ -33,7 +33,8 @@ UPDATE chunks_v2
 SET metadata = metadata
     || jsonb_build_object('utterance_type', data.new_utype::text)
     || jsonb_build_object('question_type_hints', data.new_hints::jsonb)
-FROM (VALUES %s) AS data(chunk_id, new_utype, new_hints)
+    || jsonb_build_object('utterance_type_confidence', data.new_conf::float)
+FROM (VALUES %s) AS data(chunk_id, new_utype, new_hints, new_conf)
 WHERE chunks_v2.chunk_id = data.chunk_id
 """
 
@@ -62,12 +63,12 @@ def main() -> None:
 
     import json
     for i, (chunk_id, text, speaker, speaker_role, position_type, old_utype) in enumerate(rows):
-        new_utype = infer_utterance_type(text or "", speaker_role or "", position_type or "")
+        new_utype, new_conf = infer_utterance_type_with_confidence(text or "", speaker_role or "", position_type or "")
         new_hints = infer_chunk_question_type_hints(
             text or "", speaker or "", speaker_role or "",
             {"position_type": position_type or "", "utterance_type": new_utype}
         )
-        updates.append((chunk_id, new_utype, json.dumps(new_hints, ensure_ascii=False)))
+        updates.append((chunk_id, new_utype, json.dumps(new_hints, ensure_ascii=False), round(new_conf, 2)))
         if new_utype != (old_utype or ""):
             changed += 1
 
@@ -108,7 +109,7 @@ def main() -> None:
 
 def _flush(conn: psycopg2.extensions.connection, updates: list[tuple]) -> None:
     with conn.cursor() as cur:
-        execute_values(cur, UPDATE_SQL, updates, template="(%s, %s, %s::jsonb)")
+        execute_values(cur, UPDATE_SQL, updates, template="(%s, %s, %s::jsonb, %s)")
     conn.commit()
 
 
