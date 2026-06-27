@@ -202,6 +202,16 @@ _AGENCY_ALIASES: tuple[tuple[str, str], ...] = (
     ("방위사업청", "방위사업청"),
     ("경찰청", "경찰청"),
     ("소방청", "소방청"),
+    ("과학기술정보통신부", "과학기술정보통신부"),
+    ("방송통신위원회", "방송통신위원회"),
+    ("금융위원회", "금융위원회"),
+    ("공정거래위원회", "공정거래위원회"),
+    ("국토교통부", "국토교통부"),
+    ("보건복지부", "보건복지부"),
+    ("환경부", "환경부"),
+    ("고용노동부", "고용노동부"),
+    ("산업통상자원부", "산업통상자원부"),
+    ("교육부", "교육부"),
 )
 
 _UNIVERSAL_HINTS = {"topic_search", "source_check", "report_generation"}
@@ -268,6 +278,16 @@ def infer_agency(speaker_role: str, text: str = "") -> str:
         if token in blob:
             return agency
     return ""
+
+
+def extract_agency_from_query(query: str) -> str | None:
+    blob = (query or "").strip()
+    if not blob:
+        return None
+    for token, agency in _AGENCY_ALIASES:
+        if token in blob:
+            return agency
+    return None
 
 
 def is_government_role(speaker_role: str) -> bool:

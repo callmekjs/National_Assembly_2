@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score, infer_importance_score
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score, infer_importance_score, extract_agency_from_query
 
 
 def test_classify_source_check():
@@ -214,3 +214,28 @@ def test_importance_score_member_question_bonus():
     base = infer_importance_score("정부 입장은?", utterance_type="statement", position_type="기타")
     boosted = infer_importance_score("정부 입장은?", utterance_type="question", position_type="의원")
     assert boosted > base
+
+
+def test_extract_agency_known_agency():
+    assert extract_agency_from_query("외교부가 재외국민 보호에 대해 뭐라 했나?") == "외교부"
+
+
+def test_extract_agency_alias_mapping():
+    assert extract_agency_from_query("국정원의 입장은?") == "국가정보원"
+
+
+def test_extract_agency_new_agency():
+    assert extract_agency_from_query("금융위원회의 답변을 알고 싶다") == "금융위원회"
+
+
+def test_extract_agency_returns_none_for_no_match():
+    assert extract_agency_from_query("일반적인 정책 질의") is None
+
+
+def test_extract_agency_returns_none_for_empty():
+    assert extract_agency_from_query("") is None
+
+
+def test_extract_agency_first_match_wins():
+    result = extract_agency_from_query("외교부와 통일부의 협력 방안")
+    assert result == "외교부"
