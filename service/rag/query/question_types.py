@@ -137,6 +137,22 @@ _ISSUE_DEMAND = re.compile(
     r"(?:시급|즉각|반드시|당장|조속히)\s*(?:개선|조치|해결|대응|수정|폐지|도입|강화|점검)"
 )
 
+_IMPORTANCE_COMMITMENT = re.compile(
+    r"(?:추진|검토|마련|시행|개선|강화|보완|제출|협의|협력|노력|지원|점검|조치|수립|도입)"
+    r"\s*하겠습니다"
+)
+_IMPORTANCE_DECISION = re.compile(
+    r"정부\s*(?:입장|방침|계획|정책|대책)"
+    r"|공식\s*(?:발표|입장|확인|답변)"
+    r"|법률?\s*(?:개정|제정|시행)|시행령|예산안"
+    r"|최종\s*(?:결정|확정)|방침\s*(?:을|이)\s*(?:결정|확정|수립)"
+)
+_IMPORTANCE_FORMAL = re.compile(
+    r"(?:장관|차관|위원장|청장|처장|원장)으로서"
+    r"|부처\s*(?:입장|방침|계획)"
+    r"|공식적으로|정식으로"
+)
+
 # 한국어 질의 종결 패턴 — 문장 끝에 등장하는 실제 질의 어미/요청어
 _QUESTION_ENDINGS = re.compile(
     r"(습니까|입니까|인가요|나요|않습니까|없습니까|됩니까|되나요|되십니까"
@@ -356,5 +372,25 @@ def infer_issue_score(
     if _ISSUE_DEMAND.search(body):
         score += 0.10
     if utterance_type == "question" and position_type in ("의원", "위원장", ""):
+        score += 0.10
+    return min(round(score, 2), 1.0)
+
+
+def infer_importance_score(
+    text: str, utterance_type: str = "", position_type: str = ""
+) -> float:
+    body = (text or "").strip()
+    if not body:
+        return 0.0
+    score = 0.0
+    commitment_count = len(_IMPORTANCE_COMMITMENT.findall(body))
+    score += min(commitment_count * 0.15, 0.45)
+    if _IMPORTANCE_DECISION.search(body):
+        score += 0.20
+    if _IMPORTANCE_FORMAL.search(body):
+        score += 0.15
+    if utterance_type == "answer" and position_type == "정부측":
+        score += 0.20
+    if utterance_type == "question" and position_type in ("의원", "위원장"):
         score += 0.10
     return min(round(score, 2), 1.0)

@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score, infer_importance_score
 
 
 def test_classify_source_check():
@@ -183,3 +183,34 @@ def test_issue_score_capped_at_one():
 def test_issue_score_medium_signals():
     score = infer_issue_score("이 부분에 문제가 있습니다. 개선이 필요합니다.")
     assert 0.10 <= score <= 0.60
+
+
+def test_importance_score_zero_for_procedural():
+    assert infer_importance_score("오늘 회의를 개의하겠습니다.") == 0.0
+
+
+def test_importance_score_commitment_signals():
+    score = infer_importance_score("조속히 검토하겠습니다. 시행하겠습니다.")
+    assert score >= 0.15
+
+
+def test_importance_score_decision_marker():
+    score = infer_importance_score("정부 입장을 말씀드리겠습니다.")
+    assert score >= 0.20
+
+
+def test_importance_score_govt_answer_bonus():
+    base = infer_importance_score("노력하겠습니다.", utterance_type="statement", position_type="의원")
+    boosted = infer_importance_score("노력하겠습니다.", utterance_type="answer", position_type="정부측")
+    assert boosted > base
+
+
+def test_importance_score_capped_at_one():
+    text = "시행하겠습니다. 추진하겠습니다. 마련하겠습니다. 정부 입장을 밝힙니다. 장관으로서 공식적으로 답변드립니다."
+    assert infer_importance_score(text, utterance_type="answer", position_type="정부측") == 1.0
+
+
+def test_importance_score_member_question_bonus():
+    base = infer_importance_score("정부 입장은?", utterance_type="statement", position_type="기타")
+    boosted = infer_importance_score("정부 입장은?", utterance_type="question", position_type="의원")
+    assert boosted > base
