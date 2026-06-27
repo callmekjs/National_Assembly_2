@@ -7,6 +7,7 @@ from service.rag.query.question_types import (
     embed_hint_labels,
     infer_agency,
     infer_chunk_question_type_hints,
+    infer_importance_score,
     infer_issue_score,
     infer_utterance_type_with_confidence,
 )
@@ -101,6 +102,11 @@ def _enrich_question_type_metadata(meta: dict, text: str, speaker: str, speaker_
     meta["utterance_type"] = utype
     meta["utterance_type_confidence"] = round(confidence, 2)
     meta["issue_score"] = infer_issue_score(
+        text,
+        utterance_type=utype,
+        position_type=str(meta.get("position_type") or ""),
+    )
+    meta["importance_score"] = infer_importance_score(
         text,
         utterance_type=utype,
         position_type=str(meta.get("position_type") or ""),

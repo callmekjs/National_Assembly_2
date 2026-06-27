@@ -149,3 +149,22 @@ def test_build_record_issue_score_high_for_issue_text():
         "20240717_52128_52128",
     )
     assert record["metadata"]["issue_score"] >= 0.50
+
+
+def test_build_record_has_importance_score():
+    record = _build_record(
+        _turn("검토하겠습니다. 추진하겠습니다.", speaker="홍길동", role="장관"),
+        "20240717_52128_52128",
+    )
+    assert "importance_score" in record["metadata"]
+    score = record["metadata"]["importance_score"]
+    assert isinstance(score, float)
+    assert 0.0 <= score <= 1.0
+
+
+def test_build_record_importance_score_high_for_govt_answer():
+    record = _build_record(
+        _turn("시행하겠습니다. 추진하겠습니다.", speaker="홍길동", role="장관"),
+        "20240717_52128_52128",
+    )
+    assert record["metadata"]["importance_score"] >= 0.30

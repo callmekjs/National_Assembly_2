@@ -1,0 +1,48 @@
+프론트엔드의 질의-답변 쌍 화면에서 q_full_text/a_full_text 또는 긴 preview를 그대로 전부 렌더링하지 말고, 화면 표시용 요약 텍스트를 만들어서 보여주게 수정해줘.
+
+문제:
+- 현재 질의와 답변 원문이 PDF/회의록 내용을 거의 그대로 길게 보여줘서 화면이 너무 길어지고, LLM이나 UI에서 토큰/텍스트가 과도하게 사용됨.
+- 사용자는 전체 원문보다 핵심 질의와 핵심 답변만 먼저 보고 싶음.
+- 전체 원문은 “원문 확인”을 눌렀을 때만 접어서 보여주면 됨.
+
+수정 방향:
+1. QAPairsView에서 기본 표시 텍스트는 q_full_text/a_full_text 전체가 아니라 요약된 텍스트를 사용.
+2. pair.q_summary, pair.a_summary가 백엔드에서 오면 그 값을 우선 사용.
+3. summary가 없으면 프론트에서 간단한 truncateSummary 함수를 만들어 q_preview/a_preview를 180~250자 정도로 줄여 표시.
+4. “원문 확인” 버튼을 눌렀을 때만 q_full_text/a_full_text 전체를 보여줌.
+5. 탭 목록이나 카드 기본 화면에서는 긴 원문을 절대 그대로 렌더링하지 말 것.
+6. 긴 텍스트는 문장 단위로 자연스럽게 자르고, 너무 길면 마지막에 “…”를 붙일 것.
+
+예시:
+- 기본 화면:
+  질의: “증액 사업 전체 규모와 필요성에 대해 질의함.”
+  답변: “재외동포청은 관련 사업의 예산 증액 배경과 지원 필요성을 설명함.”
+
+- 원문 확인 클릭 시:
+  회의록 원문 전체 표시
+
+가능하면 아래 유틸 함수를 추가해서 사용해줘:
+
+function summarizeText(text = '', maxLen = 220) {
+  const normalized = String(text).replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLen) return normalized
+  const sliced = normalized.slice(0, maxLen)
+  const lastSentence = Math.max(
+    sliced.lastIndexOf('.'),
+    sliced.lastIndexOf('?'),
+    sliced.lastIndexOf('!'),
+    sliced.lastIndexOf('다.'),
+    sliced.lastIndexOf('요.')
+  )
+  if (lastSentence > maxLen * 0.45) {
+    return sliced.slice(0, lastSentence + 1).trim() + '…'
+  }
+  return sliced.trim() + '…'
+}
+
+QAPairsView에서는:
+const qDisplay = pair.q_summary || summarizeText(pair.q_preview || pair.q_full_text, 220)
+const aDisplay = pair.a_summary || summarizeText(pair.a_preview || pair.a_full_text, 220)
+
+그리고 화면에는 qDisplay/aDisplay를 보여주고,
+원문 확인 영역에서만 q_full_text/a_full_text를 보여줘.
