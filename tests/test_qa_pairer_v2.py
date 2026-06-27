@@ -142,3 +142,33 @@ def test_embed_text_contains_meta():
     assert "2024-10-15" in embed
     assert "이재정" in embed
     assert "조태열" in embed
+
+
+# ── 통합: main() 함수가 JSONL 파일을 읽고 출력 생성 ─────────────
+def test_main_creates_output(tmp_path, monkeypatch):
+    import json
+    from service.etl.transform import qa_pairer_v2
+
+    # 임시 입력 파일 생성
+    input_file = tmp_path / "chunks_v2.jsonl"
+    output_dir = tmp_path / "qa_pairs"
+    turns = [
+        _turn("S1", 0, "question", "이재정", "위원", "의원", "질의"),
+        _turn("S1", 1, "answer",   "조태열", "장관", "정부측", "답변"),
+    ]
+    with input_file.open("w", encoding="utf-8") as f:
+        for t in turns:
+            f.write(json.dumps(t, ensure_ascii=False) + "\n")
+
+    # 경로 패치
+    monkeypatch.setattr(qa_pairer_v2, "CHUNKS_FINAL", input_file)
+    monkeypatch.setattr(qa_pairer_v2, "OUT_DIR",  output_dir)
+    monkeypatch.setattr(qa_pairer_v2, "OUT_FILE", output_dir / "qa_pairs_v2.jsonl")
+
+    qa_pairer_v2.main()
+
+    out = output_dir / "qa_pairs_v2.jsonl"
+    assert out.exists()
+    lines = [json.loads(l) for l in out.read_text(encoding="utf-8").splitlines()]
+    assert len(lines) == 1
+    assert lines[0]["metadata"]["chunk_type"] == "qa_pair"
