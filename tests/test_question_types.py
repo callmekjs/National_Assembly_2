@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type, infer_utterance_type_with_confidence, infer_issue_score
 
 
 def test_classify_source_check():
@@ -153,3 +153,33 @@ def test_infer_utterance_type_backward_compat():
     )
     assert isinstance(result, str)
     assert result == "question"
+
+
+def test_issue_score_zero_for_neutral():
+    assert infer_issue_score("오늘 회의를 개의하겠습니다. 감사합니다.") == 0.0
+
+
+def test_issue_score_strong_signals():
+    score = infer_issue_score("예산 낭비와 비리 쟁점이 심각합니다.")
+    assert score >= 0.50
+
+
+def test_issue_score_numerical_complaint():
+    score = infer_issue_score("3억 원이 낭비되었습니다.")
+    assert score >= 0.20
+
+
+def test_issue_score_member_question_bonus():
+    base = infer_issue_score("우려됩니다.", utterance_type="statement", position_type="정부측")
+    boosted = infer_issue_score("우려됩니다.", utterance_type="question", position_type="의원")
+    assert boosted > base
+
+
+def test_issue_score_capped_at_one():
+    text = "쟁점 논란 갈등 비리 낭비 위반 문제가 있습니다 우려됩니다 지적받습니다 100억 원 낭비 즉각 조치"
+    assert infer_issue_score(text) == 1.0
+
+
+def test_issue_score_medium_signals():
+    score = infer_issue_score("이 부분에 문제가 있습니다. 개선이 필요합니다.")
+    assert 0.10 <= score <= 0.60

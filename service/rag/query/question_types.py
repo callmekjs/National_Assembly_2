@@ -122,6 +122,21 @@ _ANSWER_MARKERS = re.compile(r"답변드|말씀드리|보고드리|설명드리|
 _PROCEDURAL_MARKERS = re.compile(r"개의|산회|정회|속개|의사일정|상정|선임|발언해\s*주십시오|질의해\s*주시")
 _ISSUE_MARKERS = re.compile(r"쟁점|문제|우려|논란|갈등|비판|지적|개선|대책|필요|부족|위험|책임")
 
+_ISSUE_STRONG = re.compile(
+    r"쟁점|논란|갈등|비리|낭비|위반|허점|부실|은폐|조작|허위|무책임|직무유기|실패|파탄"
+)
+_ISSUE_MEDIUM = re.compile(
+    r"문제(?:가|점이|가\s*있|가\s*되)|우려(?:가|를|스럽)|비판(?:을|받|하)(?:고|며|여)?"
+    r"|지적(?:을|하|되)|개선이\s*필요|시급(?:히|한)|즉각\s*(?:조치|대응|해결)"
+)
+_ISSUE_NUMERICAL = re.compile(
+    r"\d+[억만천백십]\s*원?\s*(?:낭비|손실|초과|부족|횡령|유용|누락)"
+    r"|\d+\s*(?:건|명)\s*(?:미처리|적발|위반|불법)"
+)
+_ISSUE_DEMAND = re.compile(
+    r"(?:시급|즉각|반드시|당장|조속히)\s*(?:개선|조치|해결|대응|수정|폐지|도입|강화|점검)"
+)
+
 # 한국어 질의 종결 패턴 — 문장 끝에 등장하는 실제 질의 어미/요청어
 _QUESTION_ENDINGS = re.compile(
     r"(습니까|입니까|인가요|나요|않습니까|없습니까|됩니까|되나요|되십니까"
@@ -323,3 +338,23 @@ def embed_hint_labels(hints: list[str]) -> list[str]:
             continue
         labels.append(get_question_type_spec(hint).label)
     return labels
+
+
+def infer_issue_score(
+    text: str, utterance_type: str = "", position_type: str = ""
+) -> float:
+    body = (text or "").strip()
+    if not body:
+        return 0.0
+    score = 0.0
+    strong_count = len(_ISSUE_STRONG.findall(body))
+    score += min(strong_count * 0.25, 0.50)
+    medium_count = len(_ISSUE_MEDIUM.findall(body))
+    score += min(medium_count * 0.12, 0.30)
+    if _ISSUE_NUMERICAL.search(body):
+        score += 0.20
+    if _ISSUE_DEMAND.search(body):
+        score += 0.10
+    if utterance_type == "question" and position_type in ("의원", "위원장", ""):
+        score += 0.10
+    return min(round(score, 2), 1.0)
