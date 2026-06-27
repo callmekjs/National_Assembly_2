@@ -75,3 +75,35 @@ def test_insert_sql_targets_chunks_v2():
 
 def test_insert_sql_has_on_conflict():
     assert "ON CONFLICT (chunk_id) DO UPDATE" in INSERT_SQL
+
+
+def test_load_qa_pairs_calls_load_with_qa_path(monkeypatch, tmp_path):
+    """load_chunks_v2가 qa_pairs 파일도 처리하는지 확인 (실제 DB 없이 경로 검증)."""
+    import json
+    from service.etl.loader import jsonl_to_postgres_v2
+
+    qa_file = tmp_path / "qa_pairs_v2.jsonl"
+    qa_file.write_text(
+        json.dumps({
+            "chunk_id": "S1_qa_0000", "source_id": "S1",
+            "page_no": 1, "turn_index": 0, "section_type": "body",
+            "speaker": "이재정 → 조태열", "speaker_role": "위원 → 장관",
+            "raw_text": "[질의]\n질의\n\n[답변]\n답변",
+            "clean_text": "[질의]\n질의\n\n[답변]\n답변",
+            "embed_text": "[회의일: 2024-10-15] 질의 답변",
+            "metadata": {"chunk_type": "qa_pair", "utterance_type": "qa_pair",
+                         "committee": "외교통일위원회", "meeting_date": "2024-10-15"},
+        }, ensure_ascii=False) + "\n",
+        encoding="utf-8"
+    )
+
+    inserted = []
+
+    def fake_load(jsonl_path=None, batch_size=1000):
+        if jsonl_path:
+            inserted.append(str(jsonl_path))
+        return True
+
+    monkeypatch.setattr(jsonl_to_postgres_v2, "load_chunks_v2", fake_load)
+    jsonl_to_postgres_v2.load_qa_pairs(qa_file)
+    assert str(qa_file) in inserted

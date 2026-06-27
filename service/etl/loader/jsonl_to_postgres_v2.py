@@ -93,8 +93,21 @@ def load_chunks_v2(jsonl_path: Path | None = None, batch_size: int = 1000) -> bo
         conn.close()
 
 
+DEFAULT_QA_JSONL = ROOT / "data" / "v2" / "transform" / "qa_pairs" / "qa_pairs_v2.jsonl"
+
+
+def load_qa_pairs(jsonl_path: Path | None = None, batch_size: int = 1000) -> bool:
+    """QA 쌍 JSONL을 chunks_v2에 upsert. 기존 load_chunks_v2 재사용."""
+    path = Path(jsonl_path) if jsonl_path else DEFAULT_QA_JSONL
+    if not path.exists():
+        print(f"[loader_v2] QA 쌍 파일 없음 (스킵): {path}")
+        return True  # 파일 없음은 에러가 아님 (첫 실행 등)
+    return load_chunks_v2(jsonl_path=path, batch_size=batch_size)
+
+
 def main() -> None:
     load_chunks_v2()
+    load_qa_pairs()
 
 
 if __name__ == "__main__":
