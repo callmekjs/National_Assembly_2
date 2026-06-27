@@ -128,6 +128,8 @@ class Retriever:
             "party": party or "",
             "position_type": position_type or "",
             "agency": agency or "",
+            # qa_pair_extract 질문 유형이면 qa_pair 청크만, 그 외엔 utterance 청크만
+            "chunk_type": "qa_pair" if (question_type or "").strip() == "qa_pair_extract" else "utterance",
         }
         multiplier = max(1, int(candidate_multiplier))
         candidate_k = max(top_k, top_k * multiplier)
@@ -398,6 +400,8 @@ class Retriever:
             "party": party or "",
             "position_type": position_type or "",
             "agency": agency or "",
+            # qa_pair_extract 질문 유형이면 qa_pair 청크만, 그 외엔 utterance 청크만
+            "chunk_type": "qa_pair" if (question_type or "").strip() == "qa_pair_extract" else "utterance",
         }
 
         def _sr_to_dict(row: "SearchResult") -> dict:

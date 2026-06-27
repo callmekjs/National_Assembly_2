@@ -306,44 +306,47 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     """chunks_v2 검색용 WHERE 절 생성. 첫 항목은 항상 section_type='body'."""
     parts: list[str] = ["c.section_type = 'body'"]
     params: list = []
-    if not filters:
-        return " AND ".join(parts), params
-    committee = str(filters.get("committee") or "").strip()
-    date_from = _to_iso_date(str(filters.get("date_from") or "").strip())
-    date_to = _to_iso_date(str(filters.get("date_to") or "").strip())
-    speaker = str(filters.get("speaker") or "").strip()
-    question_type = str(filters.get("question_type") or filters.get("question_type_filter") or "").strip()
-    utterance_type = str(filters.get("utterance_type") or "").strip()
-    party = str(filters.get("party") or "").strip()
-    position_type = str(filters.get("position_type") or "").strip()
-    agency = str(filters.get("agency") or "").strip()
-    if committee:
-        parts.append("COALESCE(c.metadata->>'committee', '') = %s")
-        params.append(committee)
-    if date_from:
-        parts.append("COALESCE(c.metadata->>'meeting_date', '') >= %s")
-        params.append(date_from)
-    if date_to:
-        parts.append("COALESCE(c.metadata->>'meeting_date', '') <= %s")
-        params.append(date_to)
-    if speaker:
-        parts.append("COALESCE(c.speaker, '') LIKE %s")
-        params.append(f"%{speaker}%")
-    if question_type:
-        parts.append("(c.metadata->'question_type_hints') ? %s")
-        params.append(question_type)
-    if utterance_type:
-        parts.append("COALESCE(c.metadata->>'utterance_type', '') = %s")
-        params.append(utterance_type)
-    if party:
-        parts.append("COALESCE(c.metadata->>'party', '') = %s")
-        params.append(party)
-    if position_type:
-        parts.append("COALESCE(c.metadata->>'position_type', '') = %s")
-        params.append(position_type)
-    if agency:
-        parts.append("COALESCE(c.metadata->>'agency', '') = %s")
-        params.append(agency)
-    if bool(filters.get("require_speaker")):
-        parts.append("COALESCE(c.speaker, '') <> ''")
+    if filters:
+        committee = str(filters.get("committee") or "").strip()
+        date_from = _to_iso_date(str(filters.get("date_from") or "").strip())
+        date_to = _to_iso_date(str(filters.get("date_to") or "").strip())
+        speaker = str(filters.get("speaker") or "").strip()
+        question_type = str(filters.get("question_type") or filters.get("question_type_filter") or "").strip()
+        utterance_type = str(filters.get("utterance_type") or "").strip()
+        party = str(filters.get("party") or "").strip()
+        position_type = str(filters.get("position_type") or "").strip()
+        agency = str(filters.get("agency") or "").strip()
+        if committee:
+            parts.append("COALESCE(c.metadata->>'committee', '') = %s")
+            params.append(committee)
+        if date_from:
+            parts.append("COALESCE(c.metadata->>'meeting_date', '') >= %s")
+            params.append(date_from)
+        if date_to:
+            parts.append("COALESCE(c.metadata->>'meeting_date', '') <= %s")
+            params.append(date_to)
+        if speaker:
+            parts.append("COALESCE(c.speaker, '') LIKE %s")
+            params.append(f"%{speaker}%")
+        if question_type:
+            parts.append("(c.metadata->'question_type_hints') ? %s")
+            params.append(question_type)
+        if utterance_type:
+            parts.append("COALESCE(c.metadata->>'utterance_type', '') = %s")
+            params.append(utterance_type)
+        if party:
+            parts.append("COALESCE(c.metadata->>'party', '') = %s")
+            params.append(party)
+        if position_type:
+            parts.append("COALESCE(c.metadata->>'position_type', '') = %s")
+            params.append(position_type)
+        if agency:
+            parts.append("COALESCE(c.metadata->>'agency', '') = %s")
+            params.append(agency)
+        if bool(filters.get("require_speaker")):
+            parts.append("COALESCE(c.speaker, '') <> ''")
+    # chunk_type: 기본값 'utterance' (qa_pair가 일반 검색에 혼입되지 않도록)
+    chunk_type = str(filters.get("chunk_type") or "utterance").strip() if filters else "utterance"
+    parts.append("COALESCE(c.metadata->>'chunk_type', 'utterance') = %s")
+    params.append(chunk_type)
     return " AND ".join(parts), params
