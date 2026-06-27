@@ -188,6 +188,7 @@ class Retriever:
         party: str | None = None,
         position_type: str | None = None,
         agency: str | None = None,
+        use_smart_merge: bool = True,
     ) -> list[dict]:
         agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
 
@@ -330,6 +331,10 @@ class Retriever:
             out = self._balance_speakers(out, top_k)
         else:
             out = out[:top_k]
+
+        # Smart Chunk Merge — 인접 발언 병합
+        if use_smart_merge and out:
+            out = _merge_adjacent_hits(out)
 
         # Parent Document Retrieval — 검색 후 문맥 확장
         if use_parent_doc and out:
@@ -507,6 +512,7 @@ class Retriever:
         party: str | None = None,
         position_type: str | None = None,
         agency: str | None = None,
+        use_smart_merge: bool = True,
     ) -> list[dict]:
         """True Hybrid: vector top-20 + BGE-M3 sparse top-20 → RRF → rerank top-15 → top_k.
         Dense와 Sparse 검색을 ThreadPoolExecutor로 병렬 실행.
@@ -570,4 +576,7 @@ class Retriever:
         else:
             merged = merged[:top_k]
 
+        # Smart Chunk Merge — 인접 발언 병합
+        if use_smart_merge and merged:
+            merged = _merge_adjacent_hits(merged)
         return self._enrich_with_context(merged)

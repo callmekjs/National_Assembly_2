@@ -205,3 +205,19 @@ def test_resolve_agency_filter_no_match_returns_empty_agency():
     agency, utype = _resolve_agency_filter("일반 정책 질의", "agency_answer_tracking", None, None)
     assert agency == ""
     assert utype == "answer"
+
+
+import inspect
+from service.rag.retrieval.retriever import Retriever
+
+
+def test_search_signature_has_use_smart_merge():
+    sig = inspect.signature(Retriever.search)
+    assert "use_smart_merge" in sig.parameters
+    assert sig.parameters["use_smart_merge"].default is True
+
+
+def test_search_v2_signature_has_use_smart_merge():
+    sig = inspect.signature(Retriever.search_v2)
+    assert "use_smart_merge" in sig.parameters
+    assert sig.parameters["use_smart_merge"].default is True
