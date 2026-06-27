@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from service.rag.query.question_types import classify_question, route_defaults
+from service.rag.query.question_types import classify_question, route_defaults, infer_utterance_type
 
 
 def test_classify_source_check():
@@ -47,3 +47,57 @@ def test_route_defaults_comparison_balances_speakers():
 def test_route_defaults_extract_type_sets_filter():
     defaults = route_defaults("qa_pair_extract")
     assert defaults["question_type_filter"] == "qa_pair_extract"
+
+
+def test_demand_ending_without_info_seeking_is_statement():
+    result = infer_utterance_type(
+        "북한 인권 문제에 대해 정부가 보다 적극적인 대응에 나서주시기 부탁드립니다.",
+        speaker_role="위원",
+        position_type="의원",
+    )
+    assert result == "statement"
+
+
+def test_request_ending_without_info_seeking_is_statement():
+    result = infer_utterance_type(
+        "이 사안에 대해 철저한 조사와 대책 마련을 요청드립니다.",
+        speaker_role="위원",
+        position_type="의원",
+    )
+    assert result == "statement"
+
+
+def test_demand_plus_info_seeking_is_question():
+    result = infer_utterance_type(
+        "이 법안 처리를 촉구합니다. 장관은 어떻게 생각하십니까?",
+        speaker_role="위원",
+        position_type="의원",
+    )
+    assert result == "question"
+
+
+def test_pure_info_seeking_remains_question():
+    result = infer_utterance_type(
+        "통일부는 북한 인권 문제에 대해 어떤 대책을 갖고 있습니까?",
+        speaker_role="위원",
+        position_type="의원",
+    )
+    assert result == "question"
+
+
+def test_explanation_request_remains_question():
+    result = infer_utterance_type(
+        "왜 그 결정을 하셨는지 설명해 주십시오.",
+        speaker_role="위원",
+        position_type="의원",
+    )
+    assert result == "question"
+
+
+def test_government_answer_unchanged():
+    result = infer_utterance_type(
+        "답변드리겠습니다. 해당 사안은 검토 후 조치하겠습니다.",
+        speaker_role="통일부장관",
+        position_type="정부측",
+    )
+    assert result == "answer"

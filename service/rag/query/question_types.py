@@ -132,6 +132,25 @@ _QUESTION_ENDINGS = re.compile(
     r"|밝혀주십시오|답해\s*주십시오|\?|？)"
 )
 
+# 정보 요청 없이 요구/촉구만 있는 종결 표현 — 의원 발언에서 statement로 분류
+_DEMAND_ONLY_ENDINGS = re.compile(
+    r"(부탁드립니다|부탁합니다|요청합니다|요청드립니다"
+    r"|촉구합니다|촉구드립니다|당부드립니다|당부합니다)"
+    r"[\.\s]*$"
+)
+
+# 명확한 정보 요청 마커 — 이 패턴이 있으면 demand ending도 question으로 유지
+_INFO_SEEKING_MARKERS = re.compile(
+    r"어떻게\s*(?:보|생각|할|됩|되는|하실|하십)"
+    r"|어떠합니까|어떻습니까|어떤\s*(?:입장|계획|방침|대책|생각)"
+    r"|언제|얼마나?|몇\s*[번회개월년]"
+    r"|왜\s|왜[,\?？]|왜$"
+    r"|무엇|무슨"
+    r"|(?:입|됩|않|없|십)니까"
+    r"|설명해\s*주십시오|알려주십시오|답해\s*주십시오"
+    r"|\?|？"
+)
+
 # 의원 의사진행·마무리 발언 패턴 (질의가 아님)
 _MEMBER_PROCEDURAL = re.compile(
     r"^(이상입니다|이상으로|감사합니다|고맙습니다|수고하셨습니다"
@@ -244,13 +263,17 @@ def infer_utterance_type(text: str, speaker_role: str = "", position_type: str =
     if _MEMBER_PROCEDURAL.search(body[:60]):
         return "procedural"
 
-    # 2. 발언 끝부분(마지막 400자)에 질의 종결 어미가 있으면 question
-    #    → 앞부분에 설명이 길어도 마지막에 질문이 있으면 올바르게 분류
     tail = body[-400:] if len(body) > 400 else body
+
+    # 2. 촉구형 종결 + 정보 요청 없음 → statement (오분류 방지)
+    if _DEMAND_ONLY_ENDINGS.search(tail) and not _INFO_SEEKING_MARKERS.search(body):
+        return "statement"
+
+    # 3. 발언 끝부분에 질의 종결 어미가 있으면 question
     if _QUESTION_ENDINGS.search(tail):
         return "question"
 
-    # 3. 본문 어딘가에 기존 질의 마커가 있으면 question (fallback)
+    # 4. 본문 어딘가에 기존 질의 마커가 있으면 question (fallback)
     if _QUESTION_MARKERS.search(body):
         return "question"
 
