@@ -275,6 +275,7 @@ def test_chronological_sort_handles_missing_date():
     # date 없는 항목은 "" → 앞으로 정렬됨 (빈 문자열이 날짜보다 앞)
     result = _apply_chronological_sort(hits, question_type="comparison")
     assert len(result) == 2  # 개수 변화 없음
+    assert result[0]["chunk_id"] == "src_turn_0001"  # 날짜없음 → 앞으로
 
 
 def test_chronological_sort_empty_hits():

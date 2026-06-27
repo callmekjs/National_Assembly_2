@@ -149,6 +149,7 @@ def _apply_chronological_sort(
     """comparison/meeting_summary 질문 유형에서 (회의일, turn_index) 오름차순으로 재정렬."""
     if (question_type or "").strip() not in {"comparison", "meeting_summary"}:
         return hits
+
     def _key(h: dict) -> tuple[str, int]:
         date = (h.get("metadata") or {}).get("meeting_date") or ""
         tidx = _parse_turn_index(str(h.get("chunk_id") or "")) or 0
