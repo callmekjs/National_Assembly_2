@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
+from service.speaker_aliases import has_hanja, normalize_speaker_name
 from service.rag.query.question_types import (
     embed_hint_labels,
     infer_agency,
@@ -23,11 +25,44 @@ MAX_CHARS = 600
 SKIP_CHARS = 30
 CONTEXT_CHARS = 100  # prev/next context window
 
+# section_type 분류 패턴. v2 기본 산출물에도 cover/agenda/procedural을 보존한다.
+_COVER_RE = re.compile(r"제\d+회[-–]|국\s*회\s*사\s*무\s*처|회의록\s*제\s*\d+\s*호")
+_AGENDA_RE = re.compile(
+    r"의\s*사\s*일\s*정|상\s*정\s*안\s*건|심\s*의\s*안\s*건|회\s*의\s*안\s*건"
+    r"|일\s*정\s*제\s*\d+\s*항|안건\s*제\s*\d+\s*호"
+)
+_PROCEDURAL_RE = re.compile(
+    r"개의를?\s*선언|산회를?\s*선언|정회를?\s*선언|속개합니다|속개를?\s*선언"
+    r"|회의에?\s*들어가겠습니다|회의를?\s*(마치겠습니다|마칩니다|폐회)"
+    r"|다음\s*안건으로\s*넘어|잠깐\s*정회|회의\s*시작|회의를?\s*시작"
+)
+_APPENDIX_RE = re.compile(r"붙\s*임\s*\d*\s*[\.．]|보\s*고\s*사\s*항|별\s*첨|첨부\s*자료")
+
 # 정부측 자동 감지 키워드 (speaker_role에 포함되면 정부측으로 분류)
 _GOVT_ROLE_KEYWORDS = {
     "장관", "차관", "차장", "청장", "국장", "실장", "본부장",
     "대사", "과장", "조정관", "대변인", "비서관",
 }
+
+
+def classify_section_type(speaker: str, text: str) -> str:
+    """표지/안건/절차/본문을 경량 규칙으로 분류."""
+    t = (text or "").strip()
+    if not speaker:
+        if _AGENDA_RE.search(t):
+            return "agenda"
+        if _APPENDIX_RE.search(t):
+            return "appendix"
+        if _COVER_RE.search(t):
+            return "cover"
+        return "cover"
+    if _PROCEDURAL_RE.search(t):
+        return "procedural"
+    if _AGENDA_RE.search(t):
+        return "agenda"
+    if _APPENDIX_RE.search(t):
+        return "appendix"
+    return "body"
 
 
 def _load_speaker_table() -> dict[str, str]:
@@ -189,6 +224,9 @@ def _merge_turns(turns: list[dict]) -> list[dict]:
         same = (
             t["source_id"] == buf["source_id"]
             and t["speaker"] == buf["speaker"]
+            and bool(t["speaker"])
+            and t.get("section_type", "body") == "body"
+            and buf.get("section_type", "body") == "body"
         )
         buf_len = len(buf.get("clean_text", ""))
         t_len = len(t.get("clean_text", ""))
@@ -208,8 +246,14 @@ def _build_record(chunk: dict, source_id: str) -> dict:
     meta = dict(chunk.get("metadata", {}))
     meta["token_count"] = token_count  # metadata JSONB에 포함해야 DB에 저장됨
 
-    speaker = chunk.get("speaker", "")
+    raw_speaker = str(chunk.get("speaker", "") or "").strip()
+    speaker = normalize_speaker_name(raw_speaker)
     speaker_role = chunk.get("speaker_role", "")
+    speaker_original = chunk.get("speaker_original") or None
+    if not speaker_original and raw_speaker and raw_speaker != speaker and has_hanja(raw_speaker):
+        speaker_original = raw_speaker
+    if speaker_original:
+        meta["speaker_original"] = speaker_original
     _enrich_speaker_metadata(meta, speaker, speaker_role)
     _enrich_question_type_metadata(meta, text, speaker, speaker_role)
 
@@ -261,6 +305,11 @@ def main() -> None:
                     if line.strip():
                         turns.append(json.loads(line))
 
+            for t in turns:
+                t["section_type"] = classify_section_type(
+                    str(t.get("speaker") or ""),
+                    str(t.get("clean_text") or ""),
+                )
             turns = [t for t in turns if len(t.get("clean_text", "")) >= SKIP_CHARS]
             records = [_build_record(c, sid) for c in _merge_turns(turns)]
             records = _add_context_window(records)

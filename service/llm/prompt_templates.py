@@ -76,7 +76,7 @@ RULES_PRIORITY = """
 
 (1) 참고 자료·출처 표시
 - 답변 본문에는 별도의 `## 참고 자료`, 출처 목록, `회의일 | 발언자 | 인용 요약` 표를 만들지 않는다.
-  출처 표와 원문 청크는 Streamlit UI가 별도로 렌더링한다.
+  출처 표와 원문 청크는 프론트엔드(React)가 별도로 렌더링한다.
 - 근거 표시는 주장 문장 바로 뒤의 [n] 인용 번호만 사용한다.
 - **발언자**: [컨텍스트]에 적힌 실제 호칭·성명을 따른다 (예: ○○위원, ○○ 장관). **모든 인용을 「위원장」 하나로 통일하지 않는다.** 위원장 발언만 근거일 때만 위원장으로 적는다.
 - **인용 요약**: **완전한 문장의 첫머리부터** 따옴표 안에 넣는다. **단어·문장 중간부터 잘라 넣는 인용은 금지**한다. [컨텍스트]가 중간부터 시작하면, 그 발언 앞에서 문장이 시작하는 구절을 찾아 첫머리부터 인용하거나, 부득이하면 한계에서 「원문이 문장 중간부터 제공되어…」라고 밝힌다.
@@ -197,9 +197,9 @@ RULES_GROUNDING = """
 - `## 세부 근거`와 `## 확인된 범위`를 동시에 쓰면서 서로 모순되는 답변을 만들지 않는다.
   ("확인되지 않았다"고 하면서 세부 근거를 채우는 것은 모순이며 금지한다.)
 
-▶ 질문 주제가 외교통일위원회 소관이 아닌 경우 (예: 국민연금, 조세정책, 국방예산, 검찰개혁 등):
+▶ 질문 주제가 검색 대상 위원회 소관이 아닌 경우 (예: 해당 위원회 소관이 아닌 타 위원회 의제):
 - [컨텍스트]에 유사 키워드가 포함된 청크가 있어도, 그 발언이 질문 주제와 직접 관련이 없으면 답변을 거절한다.
-- `## 메인 결과`에 "외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다"만 적고, `## 세부 근거`는 작성하지 않는다.
+- `## 메인 결과`에 "[도메인 컨텍스트에 명시된 위원회명] 회의록에서 해당 주제의 논의는 확인되지 않았습니다"처럼 실제 위원회명을 써서 작성한다.
 - **절대 금지**: 소관 외 주제를 질문받았을 때 표면적으로 유사한 키워드(예: "연금", "예산")가 포함된 청크를 끌어와 답변을 구성하는 것.
 """
 
@@ -341,7 +341,9 @@ _EXISTENCE_WARNING = (
 )
 
 def _build_out_of_scope_warning(committee: str) -> str:
-    name = (committee or "").strip() or "외교통일위원회"
+    name = (committee or "").strip()
+    if not name:
+        return ""  # 전체 위원회 검색: 소관 외 경고 불필요
     return (
         f"\n\n⚠⚠⚠ [소관 외 주제 — 즉시 적용 필수]\n"
         f"이 질문의 주제는 {name} 소관이 아닙니다.\n"
@@ -413,10 +415,10 @@ def _is_existence_query(question: str) -> bool:
 
 
 def _is_out_of_scope(question: str, committee: str = "") -> bool:
-    comm = (committee or "").strip() or "외교통일위원회"
-    keywords = _OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE.get(
-        comm, _OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE["외교통일위원회"]
-    )
+    comm = (committee or "").strip()
+    if not comm:
+        return False  # 전체 위원회 검색: 소관 외 판단 불가
+    keywords = _OUT_OF_SCOPE_KEYWORDS_BY_COMMITTEE.get(comm, [])
     return any(kw in (question or "") for kw in keywords)
 
 
@@ -442,6 +444,11 @@ def build_user_prompt(
     if question_type:
         spec = get_question_type_spec(question_type)
         type_note = f"\n라우터 판단 질문 유형: {spec.label} ({spec.id})\n"
+    _comm = (committee or "").strip()
+    _e_item = (
+        f"E) **소관 외 주제** (해당 위원회 소관이 아닌 타 의제) → 거절\n"
+        f"   - `## 메인 결과`에 '{_comm} 회의록에서 해당 주제의 논의는 확인되지 않았습니다'만 작성\n\n"
+    ) if _comm else ""
     return (
         f"질문 기준일: {ref.isoformat()}\n\n"
         f"질문: {question}{type_note}{doc_warn}{existence_warn}{scope_warn}\n\n"
@@ -463,9 +470,8 @@ def build_user_prompt(
         "   ⚠ 답변 전 반드시 확인: [컨텍스트]에 해당 내용이 **그대로** 직접 존재하는가?\n"
         "   - YES → 일반 형식으로 답변\n"
         "   - NO  → `## 메인 결과`에 ‘회의록에서 해당 내용은 확인되지 않았습니다’만 작성, `## 세부 근거` **완전 금지**\n"
-        "E) **소관 외 주제** (국민연금·국방예산·조세·검찰개혁·교육 등) → 거절\n"
-        "   - `## 메인 결과`에 ‘외교통일위원회 회의록에서 해당 주제의 논의는 확인되지 않았습니다’만 작성\n\n"
-        f"[컨텍스트]\n{context}\n\n"
+        + _e_item
+        + f"[컨텍스트]\n{context}\n\n"
         "서식(필수): 답변은 **Markdown**으로 작성한다.\n"
         "- 순서 고정: `## 메인 결과` → `## 세부 근거` → `## 확인된 범위`(조건부). `##` 형식 필수.\n"
         "- `## 확인된 범위`: 직접 발언 없음·발언자 미상·비교 한쪽 미확인·발언자 불일치 등 한계가 있을 때만 짧게 출력. 그 외에는 완전히 생략.\n"

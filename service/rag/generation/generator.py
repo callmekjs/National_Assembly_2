@@ -6,11 +6,13 @@ from typing import Any
 
 import requests
 
+from service.speaker_aliases import normalize_speaker_name
+
 
 def _speaker_from_retrieved(r: dict[str, Any]) -> str:
     meta = r.get("metadata") or {}
     sp = str(meta.get("speaker") or meta.get("speaker_name") or "").strip()
-    return sp or "발언자 미상"
+    return normalize_speaker_name(sp) or "발언자 미상"
 
 
 def _meeting_date_from_retrieved(r: dict[str, Any]) -> str:

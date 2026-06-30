@@ -59,6 +59,11 @@ def call_api(query: str, committee: str | None = None, top_k: int = 4, retries: 
             print(f"  ⚠️  rate limit (429), {wait}s 대기 후 재시도 ({attempt}/{retries})")
             time.sleep(wait)
             continue
+        if resp.status_code >= 500 and attempt < retries:
+            wait = 5 * attempt
+            print(f"  ⚠️  server error ({resp.status_code}), {wait}s 대기 후 재시도 ({attempt}/{retries})")
+            time.sleep(wait)
+            continue
         resp.raise_for_status()
         data = resp.json()
         data["_wall_ms"] = wall_ms

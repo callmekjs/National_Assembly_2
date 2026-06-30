@@ -7,18 +7,18 @@
 ## 프로젝트 서사·역할 분담
 
 - **메인(사용자 가치)**: 국회 회의록 **근거 기반 질의응답(RAG)**  
-  Streamlit **회의록 질의** → 적재(DB/벡터) 청크 검색 → **LLM 답변** → 참고 자료 `[n]`
+  React **회의록 질의** → FastAPI → LangGraph(검색·LLM) → **LLM 답변** → 참고 자료 `[n]`
 - **전제(데이터)**: 수집·ETL·청킹·Postgres·pgvector 적재 — RAG의 **재료 저장소**
-- **한 줄**: 「Streamlit 질문 → 적재 데이터 검색 근거 → LLM 답」. 검색 0건·근거 부족 시 사용자에게 명시.
+- **한 줄**: 「React 질문 → FastAPI → 적재 데이터 검색 근거 → LLM 답」. 검색 0건·근거 부족 시 사용자에게 명시.
 
-CLI `qa_demo`는 보조 경로. 제품 스토리의 중심은 Streamlit + LangGraph입니다.
+CLI `qa_demo`는 보조 경로. 제품 스토리의 중심은 React + FastAPI + LangGraph입니다.
 
 ---
 
 ## 전체 구조
 
 ```text
-[사용자·메인] Streamlit 회의록 질의 · LangGraph
+[사용자·메인] React 회의록 질의 · FastAPI · LangGraph
    질문 → Retrieve(하이브리드·리랭크) → Generate(LLM) → 참고 자료 [n]
    (스트리밍 시: Retrieve까지 LangGraph → UI에서 chat_stream)
 
@@ -66,7 +66,7 @@ CLI `qa_demo`는 보조 경로. 제품 스토리의 중심은 Streamlit + LangGr
 
 **설계 선택**
 - **직선 그래프**: v1에서 분기·멀티에이전트보다 **재현 가능한 RAG 파이프라인** 우선
-- **스트리밍 분리**: 검색은 LangGraph, 생성은 `chat_stream()` — Streamlit UX와 레이턴시 체감 개선
+- **스트리밍 분리**: 검색은 LangGraph, 생성은 `chat_stream()` — React UX와 레이턴시 체감 개선
 - **GroundingCheck 2단계 경고**: NONE이면 강한 경고(`⚠`), PARTIAL이면 안내(`ℹ`), FULL은 패스
 
 ---
@@ -150,7 +150,7 @@ CLI `qa_demo`는 보조 경로. 제품 스토리의 중심은 Streamlit + LangGr
 | 항목 | 이유 |
 |------|------|
 | ~~멀티턴 대화~~ | ✅ 2026-06-22 구현 완료 |
-| FastAPI | Streamlit 메인 우선 |
+| ~~FastAPI~~ | ✅ 구현 완료 (React + FastAPI) |
 | 전체 위원회 데이터 | 파이프라인·검색 품질 선행 |
 | LangGraph 조건부 분기 | v1 직선 파이프라인으로 충분 |
 | LLM 응답 캐시 | 비용 절감 필요 시 추후 |

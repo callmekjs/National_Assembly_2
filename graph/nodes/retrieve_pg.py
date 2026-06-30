@@ -1,6 +1,7 @@
 import logging
 import re
 import time
+from itertools import zip_longest
 
 from graph.state import QAState
 from service.rag.retrieval.date_range import normalize_meeting_date_range
@@ -148,12 +149,47 @@ def run(state: QAState) -> QAState:
         or meta.get("speaker")
         or meta.get("query_speaker_kw")
         or meta.get("query_comparison_subjects")
+        or meta.get("query_office_kw")
+        or meta.get("speaker_role")
     )
+    # query_speaker_kw에서 사람 이름을 추출해 speaker WHERE 필터로 사용
+    # "조태열 장관" → "조태열" (이름), "통일부 장관" → None (부처명은 제외)
+    # router.py의 _is_valid_person_name_kw와 동일한 기준 적용
+    _NON_NAME_KW = frozenset({
+        "장관", "의원", "위원장", "위원", "차관", "총장", "원장", "대표", "의장",
+        "소위원장", "수석", "처장", "국장", "사무총장", "후보자", "후보",
+    })
+    _ORG_SUFFIX = ("부", "처", "청")
+    _COMMON_NON_NAME = frozenset({"여야", "여당", "야당", "여러", "일부", "많은", "일각",
+                                   "어떤", "어느", "모든", "아무"})
+    _PARTICLE_ENDINGS = ("은", "는", "이", "가", "를", "을", "의", "에", "서", "로", "며", "다", "고", "지")
+
+    def _person_name_from_kw(kw_list: list[str]) -> str | None:
+        for kw in kw_list:
+            if kw in _NON_NAME_KW:
+                continue
+            if kw in _COMMON_NON_NAME:
+                continue
+            if any(kw.endswith(s) for s in _ORG_SUFFIX):
+                continue
+            if any(kw.endswith(p) for p in _PARTICLE_ENDINGS):
+                continue
+            if len(kw) > 3:  # 한국 인명은 2-3자, 4자 이상은 오탐 가능성 높음
+                continue
+            if len(kw) >= 2:
+                return kw
+        return None
+
+    _query_speaker_kw: list[str] = meta.get("query_speaker_kw") or []
+    _speaker_from_kw = _person_name_from_kw(_query_speaker_kw)
     question_type_filter = (str(meta.get("question_type_filter") or "").strip() or None)
     utterance_type = (str(meta.get("utterance_type") or "").strip() or None)
     party = (str(meta.get("party") or "").strip() or None)
     position_type = (str(meta.get("position_type") or "").strip() or None)
     agency = (str(meta.get("agency") or "").strip() or None)
+    speaker_role = (str(meta.get("speaker_role") or "").strip() or None)
+    office_terms = meta.get("office_terms") or []
+    office_agencies = meta.get("office_agencies") or []
 
     _search_kwargs = dict(
         alpha=alpha,
@@ -189,26 +225,81 @@ def run(state: QAState) -> QAState:
 
     # Rule 1: 비교 쿼리는 두 주체 각각 별도 검색 후 병합
     comparison_subjects = meta.get("query_comparison_subjects") or []
-    #st.write (comparison_subjects)
-    # v2 검색 경로 (use_v2_retrieval=True)
-    if use_v2_retrieval:
-        if len(comparison_subjects) == 2:
-            logger.info("[Retrieve] use_v2_retrieval=True — 비교쿼리 병렬 검색 미지원, 통합 v2 검색으로 대체")
-        results = retriever.search_v2(
-            query=query,
-            top_k=top_k,
+
+    def _v2_search_kwargs(subj_query: str, speaker_name: str, per_k: int) -> dict:
+        return dict(
+            query=subj_query,
+            top_k=per_k,
+            alpha=alpha,
             committee=committee,
             date_from=date_from,
             date_to=date_to,
-            speaker=meta.get("speaker") or None,
+            speaker=speaker_name,
             use_neural_reranker=use_neural_reranker,
-            require_speaker=require_speaker,
+            balance_speakers=False,
+            require_speaker=True,
             question_type=question_type_filter,
             utterance_type=utterance_type,
             party=party,
             position_type=position_type,
             agency=agency,
+            speaker_role=speaker_role,
+            office_terms=office_terms,
+            office_agencies=office_agencies,
         )
+
+    # v2 검색 경로 (use_v2_retrieval=True)
+    if use_v2_retrieval:
+        if len(comparison_subjects) == 2:
+            from concurrent.futures import ThreadPoolExecutor
+            per_k = max(top_k, 8)
+            subj_queries: list[str] = []
+            for i, subj_kw in enumerate(comparison_subjects):
+                other_name = comparison_subjects[1 - i][0]
+                topic_q = re.sub(r'\s+', ' ', query.replace(other_name, "")).strip()
+                subj_queries.append(" ".join(subj_kw) + " " + topic_q)
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                fut_a = pool.submit(retriever.search_v2, **_v2_search_kwargs(subj_queries[0], comparison_subjects[0][0], per_k))
+                fut_b = pool.submit(retriever.search_v2, **_v2_search_kwargs(subj_queries[1], comparison_subjects[1][0], per_k))
+                res_a = fut_a.result()
+                res_b = fut_b.result()
+
+            seen_ids: set[str] = set()
+            results = []
+            for pair in zip_longest(res_a, res_b):
+                for r in pair:
+                    if r is None:
+                        continue
+                    cid = r.get("chunk_id") or r.get("source_id") or ""
+                    if cid not in seen_ids:
+                        seen_ids.add(cid)
+                        results.append(r)
+            logger.info("[Retrieve] v2 비교쿼리 분리검색: A=%d B=%d 병합=%d", len(res_a), len(res_b), len(results))
+        else:
+            # 집계형 쿼리는 화자 필터 없이 balance_speakers로 다양성 확보
+            _aggregate = bool(meta.get("aggregate_query"))
+            _speaker = None if _aggregate else (meta.get("speaker") or _speaker_from_kw or None)
+            results = retriever.search_v2(
+                query=query,
+                top_k=top_k,
+                alpha=alpha,
+                committee=committee,
+                date_from=date_from,
+                date_to=date_to,
+                speaker=_speaker,
+                use_neural_reranker=use_neural_reranker,
+                balance_speakers=balance_speakers,
+                require_speaker=require_speaker,
+                question_type=question_type_filter,
+                utterance_type=utterance_type,
+                party=party,
+                position_type=position_type,
+                agency=agency,
+                speaker_role=speaker_role,
+                office_terms=office_terms,
+                office_agencies=office_agencies,
+            )
     # v1 검색 경로 (기존 로직 완전 유지)
     elif len(comparison_subjects) == 2:
         per_k = max(top_k * 2, 15)
@@ -230,6 +321,17 @@ def run(state: QAState) -> QAState:
     else:
         results = retriever.search(query=query, top_k=top_k, **_search_kwargs)
     state["retrieval_empty"] = len(results) == 0
+
+    # 위원회 분포 계산 (React UI에서 출처 분포 표시용)
+    if results:
+        from collections import Counter
+        comm_dist = Counter(
+            (r.get("metadata") or {}).get("committee") or "미상"
+            for r in results
+        )
+        state["meta"]["committee_distribution"] = dict(comm_dist)
+        logger.info("[Retrieve] committee_distribution=%s", dict(comm_dist))
+
     state["retrieved"] = [
         {
             "chunk_text": _clean_chunk(r.get("content", "")),

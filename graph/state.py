@@ -20,7 +20,7 @@ class QAState(TypedDict, total=False):
     meta: Dict                                 # {"top_k":int, "rerank_n":int, "max_ctx_tokens":int, ...} 등 질의 처리 주요 파라미터
 
     retrieval_empty: bool                      # 검색 결과 0건 → Generate 스킵 시 True
-    generation_skipped: str                    # 스킵 사유(e.g. "no_hits")
+    generation_skipped: str                    # 스킵 사유("no_hits" | "needs_clarification" | "streaming" 등)
     llm_error_kind: Optional[str]             # "model_backend" | "exception" | None — UI에서 검색 실패와 구분
 
     latency_ms: Dict                           # {"retrieve_ms": float, "generate_ms": float} 단계별 처리 시간

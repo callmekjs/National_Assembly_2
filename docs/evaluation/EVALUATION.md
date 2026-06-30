@@ -96,7 +96,7 @@ python -m service.rag.evaluate_retrieval --pg-port 5433
 python -m service.rag.evaluate_retrieval --pg-port 5433 --report-out service/rag/eval_report_latest.json
 ```
 
-### 2) Streamlit ↔ 검색 인용 정합
+### 2) 검색 인용 정합
 
 ```powershell
 python -m service.rag.verify_streamlit_citation_alignment --pg-port 5433
@@ -176,7 +176,7 @@ grounding_score = 인용 있는 줄 수 / 의미 있는 줄 수
 
 ### 재현 확인 방법
 
-Streamlit에서 검색 결과가 있는 질문을 입력 후 답변에 경고 문구 유무로 확인.  
+React UI에서 검색 결과가 있는 질문을 입력 후 답변에 경고 문구 유무로 확인.  
 `graph/nodes/grounding_check.py` 콘솔 로그: `[GroundingCheck] level=? score=0.XX docs=N weak=? warned=yes/no`
 
 ```powershell
@@ -188,7 +188,7 @@ python -m service.rag.eval.unanswerable_eval --pg-port 5433
 
 ## 주의 (해석 시)
 
-1. **기본 Streamlit 경로**는 고급 검색(HyDE, fusion, neural reranker 등)이 **꺼져 있음**. A/B·사이드바 옵션과 숫자가 다를 수 있음.
+1. **기본 경로**는 고급 검색(HyDE, fusion, neural reranker 등)이 **꺼져 있음**. A/B 옵션과 숫자가 다를 수 있음.
 2. Day 11 회귀는 **청킹 4,943 기준**으로 달성; 이후 **18,048 청크**로 재적재. 동일 조건 재실행 스냅샷을 README/본 문서에 주기적으로 갱신 권장.
 3. RAGAS·A/B 리포트는 실행 시 `data/reports/`에 생성 — 저장된 JSON이 없으면 위 명령으로 재생성.
 
@@ -316,7 +316,7 @@ python -m service.rag.eval.unanswerable_eval --pg-port 5433
 |------|-----------------|
 | `graph/nodes/router.py` | `_extract_query_speaker_kw()` — 단독 발언자 질문 감지, `query_speaker_kw` 상태 저장 |
 | `graph/nodes/grounding_check.py` | `_validate_speaker_bullets()`, `_remove_contradictory_limits()`, `_query_speaker_matches_chunk()`, `_extract_personal_names()` 추가 |
-| `pages/views/chat.py` | 스트리밍 후 처리에서 `_extract_query_speaker_kw(user_input)` 직접 호출 (Streamlit 세션 캐시 Router 우회) |
+| `pages/views/chat.py` | 스트리밍 후 처리에서 `_extract_query_speaker_kw(user_input)` 직접 호출 (세션 캐시 Router 우회) |
 
 **재테스트 결과**
 
@@ -324,7 +324,7 @@ python -m service.rag.eval.unanswerable_eval --pg-port 5433
 |------|--------------------------|----------------|------|
 | re1 | 위원장 김석기 포함 | 있음 | ❌ |
 | re2 | 위원장 김석기 포함 | 있음 | ❌ |
-| re3 | 위원장 김석기 포함 (Streamlit 캐시 미갱신) | 있음 | ❌ |
+| re3 | 위원장 김석기 포함 (세션 캐시 미갱신) | 있음 | ❌ |
 | re4 | 위원장 김석기 포함 | ✅ 없음 (Bug C 해결) | ❌ (Bug B 미해결) |
 | **re5** | **없음** (통일부장관만 포함) | **✅ 없음** | **✅ PASS** |
 

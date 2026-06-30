@@ -20,6 +20,7 @@ import logging
 import re
 
 from graph.state import QAState
+from service.speaker_aliases import extract_speaker_marker, normalize_speaker_name
 
 logger = logging.getLogger(__name__)
 
@@ -150,16 +151,23 @@ def _speaker_from_text(text: str) -> str:
         return ""
     m = re.search(r"\[발언자:\s*([^\]\n]+)\]", t)
     if m:
-        return m.group(1).strip()
+        return normalize_speaker_name(m.group(1).strip())
+    detected_speaker, _, _ = extract_speaker_marker(t)
+    if detected_speaker:
+        return detected_speaker
     m = re.match(r"[○◯]\s*([가-힣A-Za-z0-9·ㆍ-]{2,20}(?:\s+[가-힣A-Za-z0-9·ㆍ-]{1,20})?)", t)
-    return m.group(1).strip() if m else ""
+    return normalize_speaker_name(m.group(1).strip()) if m else ""
 
 
 def _doc_speaker_label(doc: dict) -> str:
     meta = doc.get("metadata") or {}
     speaker = str(doc.get("speaker") or meta.get("speaker") or "").strip()
     role = str(doc.get("speaker_role") or meta.get("speaker_role") or "").strip()
-    if not speaker:
+    detected_speaker, detected_role, _ = extract_speaker_marker(doc.get("chunk_text", "") or doc.get("content", ""))
+    if detected_speaker:
+        speaker = detected_speaker
+        role = detected_role or role
+    elif not speaker:
         speaker = _speaker_from_text(doc.get("chunk_text", "") or doc.get("content", ""))
     if speaker and role and role not in speaker:
         return f"{speaker} {role}"
@@ -171,6 +179,64 @@ def _get_chunk_speaker(docs: list[dict], n: int) -> str:
     if 1 <= n <= len(docs):
         return _doc_speaker_label(docs[n - 1])
     return ""
+
+
+def _quote_from_doc(doc: dict, max_len: int = 90) -> str:
+    text = str(doc.get("chunk_text") or doc.get("content") or "").strip()
+    if not text:
+        return ""
+    text = re.sub(
+        r"(?:^|\n|[\s)])\s*[○◯]\s*[가-힣\u3400-\u9fff\uf900-\ufaff]{2,4}\s*"
+        r"(?:위원장|위원|의원|장관|차관|총장|원장|대표|의장|후보자|후보)\s*",
+        " ",
+        text,
+    )
+    text = re.sub(r"\s+", " ", text).strip(" 　:：")
+    if len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    for sep in ("다.", "요.", "까?", "? ", ". ", " "):
+        pos = cut.rfind(sep)
+        if pos >= max_len * 0.45:
+            end = pos + len(sep.rstrip())
+            return cut[:end].strip()
+    return cut.rstrip(" ,.;:，、") + "..."
+
+
+def _speaker_refusal_fallback(ans: str, docs: list[dict], query_speaker_kw: list[str]) -> tuple[str, bool]:
+    """특정 인물 발언 검색에서 직접 발언 청크가 있는데 LLM이 거절하면 근거 기반 요약으로 복구."""
+    if not docs or not query_speaker_kw:
+        return ans, False
+    if not _CONCLUSION_REFUSAL.search(_extract_conclusion_text(ans)):
+        return ans, False
+
+    matches: list[tuple[int, str, str]] = []
+    for idx, doc in enumerate(docs[:8], start=1):
+        speaker = _get_chunk_speaker(docs, idx)
+        if not _query_speaker_matches_chunk(speaker, query_speaker_kw):
+            continue
+        quote = _quote_from_doc(doc)
+        if quote:
+            matches.append((idx, speaker, quote))
+    if not matches:
+        return ans, False
+
+    label = matches[0][1] or "질문 대상 발언자"
+    cite_suffix = "".join(f"[{idx}]" for idx, _, _ in matches[:2])
+    bullets = [
+        f"- **{speaker or label}**은 \"{quote}\"라고 발언했다[{idx}]."
+        for idx, speaker, quote in matches[:4]
+    ]
+    fixed = (
+        "## 메인 결과\n\n"
+        f"{label}의 직접 발언이 회의록에서 확인되었습니다{cite_suffix}. "
+        "주요 발언 내용은 아래 세부 근거에 정리했습니다"
+        f"{cite_suffix}.\n\n"
+        "## 세부 근거\n\n"
+        + "\n".join(bullets)
+    )
+    logger.debug("[GroundingCheck] 특정 인물 발언 거절 응답을 직접 발언 근거로 복구")
+    return fixed, True
 
 
 def _query_speaker_matches_chunk(chunk_speaker: str, kw: list[str]) -> bool:
@@ -540,6 +606,12 @@ def _remove_unlabeled_detail_section(ans: str) -> tuple[str, bool]:
 _LIMITS_CONTRADICTION_RE = re.compile(
     r"[^\n]*(?:직접\s*발언|직접\s*인용)[^\n]*(?:확인되지|확인할\s*수\s*없|없습니다)[^\n]*"
 )
+_DETAIL_CITED_BULLET_RE = re.compile(r"^-\s+\*\*.+?\*\*.*\[\d+\]", re.MULTILINE)
+_ANSWER_CONTRADICTION_RE = re.compile(
+    r"(?:직접\s*발언|구체적인\s*(?:발언\s*)?내용)[^\n.。]*"
+    r"(?:확인되지|확인할\s*수\s*없|찾지\s*못했|찾을\s*수\s*없)"
+)
+_LIMIT_SECTION_RE = re.compile(r"\n*##\s*확인된\s*범위\s*\n+(?P<body>.*?)(?=\n##\s|\Z)", re.DOTALL)
 
 
 def _remove_contradictory_limits(ans: str) -> tuple[str, bool]:
@@ -585,6 +657,101 @@ def _remove_contradictory_limits(ans: str) -> tuple[str, bool]:
         out.append(line)
 
     return "\n".join(out), changed
+
+
+def _remove_contradictory_answer_sentences(ans: str) -> tuple[str, bool]:
+    """세부 근거가 있는데 본문에 남은 '확인 안 됨' 모순 문장을 제거."""
+    if not _DETAIL_CITED_BULLET_RE.search(ans):
+        return ans, False
+
+    out: list[str] = []
+    changed = False
+    for line in ans.splitlines():
+        if not _ANSWER_CONTRADICTION_RE.search(line) or line.strip().startswith("-"):
+            out.append(line)
+            continue
+        parts = re.split(r"(?<=[.!?。])\s+", line)
+        kept = [p for p in parts if p and not _ANSWER_CONTRADICTION_RE.search(p)]
+        if kept:
+            out.append(" ".join(kept).strip())
+        changed = True
+        logger.debug(f"[GroundingCheck] 본문 모순 문구 제거: '{line[:60]}'")
+    return "\n".join(out), changed
+
+
+def _remove_redundant_confirmed_range(ans: str) -> tuple[str, bool]:
+    """인용된 세부 근거가 충분하면 일반적인 확인 범위 섹션은 제거."""
+    if not _DETAIL_CITED_BULLET_RE.search(ans):
+        return ans, False
+
+    keep_markers = (
+        "확인되지",
+        "확인할 수 없",
+        "출처 미확인",
+        "발언자 불일치",
+        "질문 주체 외",
+        "근거 부족",
+        "미상",
+    )
+    lines = ans.splitlines()
+    out: list[str] = []
+    i = 0
+    changed = False
+    while i < len(lines):
+        if re.match(r"#{1,4}\s*확인된\s*범위", lines[i].strip()):
+            j = i + 1
+            body_lines: list[str] = []
+            while j < len(lines) and not lines[j].strip().startswith("## "):
+                body_lines.append(lines[j])
+                j += 1
+            body = "\n".join(body_lines).strip()
+            if body and any(marker in body for marker in keep_markers):
+                out.extend(lines[i:j])
+            else:
+                changed = True
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+    return cleaned, changed
+
+
+def _fill_empty_main_result(ans: str) -> tuple[str, bool]:
+    """모순 문장 제거 후 메인 결과가 비면 세부 근거 기반 안전 문장으로 채운다."""
+    if not _DETAIL_CITED_BULLET_RE.search(ans):
+        return ans, False
+
+    lines = ans.splitlines()
+    main_idx = -1
+    next_header_idx = len(lines)
+    for i, line in enumerate(lines):
+        if re.match(r"#{1,4}\s*(?:메인\s*결과|핵심\s*결론)", line.strip()):
+            main_idx = i
+            continue
+        if main_idx >= 0 and i > main_idx and line.strip().startswith("## "):
+            next_header_idx = i
+            break
+    if main_idx < 0:
+        main_idx = -1
+        next_header_idx = 0
+    body = "\n".join(lines[main_idx + 1:next_header_idx]).strip()
+    if body:
+        return ans, False
+
+    first_bullet = next((line.strip() for line in lines if _DETAIL_CITED_BULLET_RE.search(line)), "")
+    label_match = _BULLET_BOLD_RE.match(first_bullet)
+    label = label_match.group(2).strip() if label_match else "질문 대상 발언자"
+    cite_nums = list(dict.fromkeys(re.findall(r"\[(\d+)\]", "\n".join(lines))))
+    cite_suffix = "".join(f"[{n}]" for n in cite_nums[:2]) or "[1]"
+    summary = f"{label}의 직접 발언이 회의록에서 확인되었습니다{cite_suffix}. 주요 내용은 아래 세부 근거에 정리했습니다{cite_suffix}."
+
+    if main_idx < 0:
+        return f"## 메인 결과\n\n{summary}\n\n{ans}".strip(), True
+
+    new_lines = lines[:main_idx + 1] + ["", summary, ""] + lines[next_header_idx:]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(new_lines)).strip(), True
 
 
 def _is_meaningful(line: str) -> bool:
@@ -847,6 +1014,12 @@ def run(state: QAState) -> QAState:
             state["draft_answer"] = ans
             logger.debug("[GroundingCheck] 세부 근거 제거: 핵심 결론이 확인 불가 패턴")
 
+    if ans.strip() and docs:
+        _qsk_for_fallback = list((state.get("meta") or {}).get("query_speaker_kw") or [])
+        ans, speaker_fallback = _speaker_refusal_fallback(ans, docs, _qsk_for_fallback)
+        if speaker_fallback:
+            state["draft_answer"] = ans
+
     # ── 발언자 검증: 타인 발언 이동 + 이름 교정 ──────────────────
     spk_changed = False
     if ans.strip() and docs:
@@ -870,6 +1043,18 @@ def run(state: QAState) -> QAState:
     if ans.strip():
         ans, lim_changed = _remove_contradictory_limits(ans)
         if lim_changed:
+            state["draft_answer"] = ans
+
+    # ── 본문/확인 범위의 잔여 모순 제거 ─────────────────────────
+    if ans.strip():
+        ans, ans_contra_changed = _remove_contradictory_answer_sentences(ans)
+        if ans_contra_changed:
+            state["draft_answer"] = ans
+        ans, main_filled = _fill_empty_main_result(ans)
+        if main_filled:
+            state["draft_answer"] = ans
+        ans, redundant_range_removed = _remove_redundant_confirmed_range(ans)
+        if redundant_range_removed:
             state["draft_answer"] = ans
 
     # ── 볼드 레이블 없는 세부 근거 섹션 제거 ────────────────────────

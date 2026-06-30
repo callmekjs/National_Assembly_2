@@ -118,11 +118,11 @@ frontend/
 
 ---
 
-## 6. Streamlit 처리
+## 6. Streamlit 처리 (완료)
 
-- 전환 완료 전까지 병행 운영 (`streamlit run app.py` 유지)
-- React 검증 후 `app.py`, `pages/` 제거
-- FastAPI는 React 전환 후에도 그대로 유지 (API 서버)
+- Streamlit 완전 제거 완료 — `app.py`, `pages/` 삭제됨
+- FastAPI는 그대로 유지 (React의 API 서버)
+- 프론트엔드는 React만 사용
 
 ---
 

@@ -58,7 +58,7 @@
 1. Postgres + `embeddings_e5` 적재 확인  
 2. `evaluate_retrieval` 1회 통과(지표는 README 참고)  
 3. `qa_demo` 3문항 실행, `Search hits` 및 근거 블록 형식 확인  
-4. `streamlit run app.py` 후 **회의록 질의**에서 한 번 질의·참고 자료 확인
+4. React dev server 또는 API 엔드포인트로 **회의록 질의**에서 한 번 질의·참고 자료 확인
 
 ## LLM 생성 (Day 12 요약)
 
@@ -76,4 +76,4 @@
 - **민감도(참고)**  
   - `committee`는 메타 JSON의 문자열과 **완전 일치**해야 한다(공백·표기 차이 시 결과 없음).  
   - `meeting_date`가 `YYYY-MM-DD`가 아니면 시작·종료 필터 문자열 비교가 어긋날 수 있다.  
-  - 시작일이 종료일보다 늦게 입력되면 **`normalize_meeting_date_range`**가 순서를 바꿔 검색한다(`Retriever`·Streamlit Retrieve 노드 공통).
+  - 시작일이 종료일보다 늦게 입력되면 **`normalize_meeting_date_range`**가 순서를 바꿔 검색한다(`Retriever`·Retrieve 노드 공통).

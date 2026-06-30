@@ -9,6 +9,12 @@ from pgvector.psycopg2 import register_vector
 
 from config.vector_database import get_vector_db_config
 from service.rag.interfaces.vector_store import SearchResult
+from service.speaker_aliases import (
+    extract_speaker_marker,
+    has_hanja,
+    normalize_speaker_name,
+    speaker_alias_variants,
+)
 
 _POOL: pg_pool.ThreadedConnectionPool | None = None
 _POOL_CFG: dict = {}
@@ -100,10 +106,19 @@ class PgVectorStore:
                 params.append(date_to)
             speaker = str(filters.get("speaker") or "").strip()
             if speaker:
-                where_parts.append("COALESCE(c.metadata->>'speaker', '') LIKE %s")
-                params.append(f"%{speaker}%")
+                where, speaker_params = _build_speaker_like_filter(
+                    speaker,
+                    speaker_expr="COALESCE(c.metadata->>'speaker', '')",
+                    text_expr="COALESCE(c.text, '')",
+                )
+                where_parts.append(where)
+                params.extend(speaker_params)
             if bool(filters.get("require_speaker")):
-                where_parts.append("COALESCE(c.metadata->>'speaker', '') <> ''")
+                where_parts.append(
+                    "(COALESCE(c.metadata->>'speaker', '') <> '' "
+                    "OR COALESCE(c.metadata->>'speaker_original', '') <> '' "
+                    "OR COALESCE(c.text, '') ~ '^[[:space:]]*[○◯]')"
+                )
 
         if where_parts:
             sql += " WHERE " + " AND ".join(where_parts)
@@ -118,7 +133,7 @@ class PgVectorStore:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
-            SearchResult(
+            _build_search_result(
                 chunk_id=row[0],
                 source_id=row[1] or "",
                 content=row[2] or "",
@@ -204,7 +219,7 @@ class PgVectorStore:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
-            SearchResult(
+            _build_search_result(
                 chunk_id=row[0],
                 source_id=row[1] or "",
                 content=row[2] or "",
@@ -222,25 +237,34 @@ class PgVectorStore:
         top_k: int = 50,
         filters: dict | None = None,
     ) -> list[SearchResult]:
-        """chunks_v2.clean_text PostgreSQL FTS 검색."""
+        """chunks_v2.clean_text PostgreSQL FTS 검색.
+
+        plainto_tsquery (AND) 대신 토큰 OR 쿼리를 사용해 한국어 recall을 높인다.
+        2자 이상 한글/영문/숫자 토큰을 추출해 'tok1 | tok2 | tok3' 형식의 to_tsquery로 변환.
+        """
+        import re as _re
+        tokens = _re.findall(r"[가-힣\u3400-\u9fff\uf900-\ufaffa-zA-Z0-9]{2,}", query_text)
+        if not tokens:
+            return []
+        ts_expr = " | ".join(tokens)
         where, filter_params = _build_v2_filter_where(filters)
         sql = f"""
         SELECT c.chunk_id, c.source_id, c.clean_text,
                ts_rank(to_tsvector('simple', c.clean_text),
-                       plainto_tsquery('simple', %s)) AS rank,
+                       to_tsquery('simple', %s)) AS rank,
                c.metadata, c.speaker, c.speaker_role, c.page_no
         FROM chunks_v2 c
         WHERE {where}
-          AND to_tsvector('simple', c.clean_text) @@ plainto_tsquery('simple', %s)
+          AND to_tsvector('simple', c.clean_text) @@ to_tsquery('simple', %s)
         ORDER BY rank DESC, c.chunk_id ASC
         LIMIT %s
         """
-        params = [query_text] + filter_params + [query_text, top_k]
+        params = [ts_expr] + filter_params + [ts_expr, top_k]
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
-            SearchResult(
+            _build_search_result(
                 chunk_id=row[0],
                 source_id=row[1] or "",
                 content=row[2] or "",
@@ -275,7 +299,7 @@ class PgVectorStore:
             cur.execute(sql, tuple(params))
             rows = cur.fetchall()
         return [
-            SearchResult(
+            _build_search_result(
                 chunk_id=row[0],
                 source_id=row[1] or "",
                 content=row[2] or "",
@@ -302,6 +326,135 @@ def _to_iso_date(d: str) -> str:
     return d
 
 
+def _build_speaker_like_filter(
+    speaker: str,
+    *,
+    speaker_expr: str,
+    text_expr: str,
+) -> tuple[str, list]:
+    variants = speaker_alias_variants(speaker)
+    clauses: list[str] = []
+    params: list = []
+    for variant in variants:
+        pattern = f"%{variant}%"
+        for expr in (
+            speaker_expr,
+            "COALESCE(c.metadata->>'speaker_original', '')",
+        ):
+            clauses.append(f"{expr} LIKE %s")
+            params.append(pattern)
+        for marker in ("◯", "○"):
+            clauses.append(f"{text_expr} LIKE %s")
+            params.append(f"%{marker}{variant}%")
+            clauses.append(f"{text_expr} LIKE %s")
+            params.append(f"%{marker} {variant}%")
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+def _filter_values(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw = value
+    elif isinstance(value, str) and value.strip():
+        raw = [value]
+    else:
+        raw = []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        key = "".join(text.split())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(text)
+    return out
+
+
+def _build_office_scope_filter(
+    *,
+    role_terms: list[str],
+    agencies: list[str],
+    text_expr: str,
+) -> tuple[str, list]:
+    clauses: list[str] = []
+    params: list = []
+    for term in _filter_values(role_terms):
+        pattern = f"%{term}%"
+        for expr in (
+            "COALESCE(c.speaker_role, '')",
+            "COALESCE(c.metadata->>'speaker_role', '')",
+            text_expr,
+        ):
+            clauses.append(f"{expr} LIKE %s")
+            params.append(pattern)
+    for agency in _filter_values(agencies):
+        pattern = f"%{agency}%"
+        clauses.append("COALESCE(c.metadata->>'agency', '') = %s")
+        params.append(agency)
+        clauses.append(f"{text_expr} LIKE %s")
+        params.append(pattern)
+    if not clauses:
+        return "", []
+    return "(" + " OR ".join(clauses) + ")", params
+
+
+def _build_search_result(
+    *,
+    chunk_id: str,
+    source_id: str,
+    content: str,
+    similarity: float,
+    metadata: dict | None,
+    speaker: str = "",
+    speaker_role: str = "",
+    embedding: list[float] | None = None,
+) -> SearchResult:
+    meta, normalized_speaker, normalized_role = _normalize_result_speaker(
+        content=content,
+        metadata=metadata,
+        speaker=speaker,
+        speaker_role=speaker_role,
+    )
+    return SearchResult(
+        chunk_id=chunk_id,
+        source_id=source_id,
+        content=content,
+        similarity=similarity,
+        metadata=meta,
+        speaker=normalized_speaker,
+        speaker_role=normalized_role,
+        embedding=embedding,
+    )
+
+
+def _normalize_result_speaker(
+    *,
+    content: str,
+    metadata: dict | None,
+    speaker: str = "",
+    speaker_role: str = "",
+) -> tuple[dict, str, str]:
+    meta = dict(metadata or {})
+    stored_speaker = str(speaker or meta.get("speaker") or "").strip()
+    stored_role = str(speaker_role or meta.get("speaker_role") or "").strip()
+    detected_speaker, detected_role, detected_original = extract_speaker_marker(content)
+
+    normalized_stored = normalize_speaker_name(stored_speaker)
+    final_speaker = detected_speaker or normalized_stored
+    final_role = detected_role or stored_role
+
+    if final_speaker:
+        meta["speaker"] = final_speaker
+    if final_role:
+        meta["speaker_role"] = final_role
+    if detected_original:
+        meta["speaker_original"] = detected_original
+    elif stored_speaker and stored_speaker != normalized_stored and has_hanja(stored_speaker):
+        meta.setdefault("speaker_original", stored_speaker)
+
+    return meta, final_speaker, final_role
+
+
 def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
     """chunks_v2 검색용 WHERE 절 생성. 첫 항목은 항상 section_type='body'."""
     parts: list[str] = ["c.section_type = 'body'"]
@@ -316,6 +469,9 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
         party = str(filters.get("party") or "").strip()
         position_type = str(filters.get("position_type") or "").strip()
         agency = str(filters.get("agency") or "").strip()
+        speaker_role = str(filters.get("speaker_role") or "").strip()
+        office_terms = _filter_values(filters.get("office_terms"))
+        office_agencies = _filter_values(filters.get("office_agencies"))
         if committee:
             parts.append("COALESCE(c.metadata->>'committee', '') = %s")
             params.append(committee)
@@ -326,8 +482,23 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
             parts.append("COALESCE(c.metadata->>'meeting_date', '') <= %s")
             params.append(date_to)
         if speaker:
-            parts.append("COALESCE(c.speaker, '') LIKE %s")
-            params.append(f"%{speaker}%")
+            where, speaker_params = _build_speaker_like_filter(
+                speaker,
+                speaker_expr="COALESCE(c.speaker, '')",
+                text_expr="COALESCE(c.clean_text, '')",
+            )
+            parts.append(where)
+            params.extend(speaker_params)
+        role_terms = _filter_values([speaker_role] + office_terms)
+        if role_terms or office_agencies:
+            where, office_params = _build_office_scope_filter(
+                role_terms=role_terms,
+                agencies=office_agencies,
+                text_expr="COALESCE(c.clean_text, '')",
+            )
+            if where:
+                parts.append(where)
+                params.extend(office_params)
         if question_type:
             parts.append("(c.metadata->'question_type_hints') ? %s")
             params.append(question_type)
@@ -344,7 +515,11 @@ def _build_v2_filter_where(filters: dict | None) -> tuple[str, list]:
             parts.append("COALESCE(c.metadata->>'agency', '') = %s")
             params.append(agency)
         if bool(filters.get("require_speaker")):
-            parts.append("COALESCE(c.speaker, '') <> ''")
+            parts.append(
+                "(COALESCE(c.speaker, '') <> '' "
+                "OR COALESCE(c.metadata->>'speaker_original', '') <> '' "
+                "OR COALESCE(c.clean_text, '') ~ '^[[:space:]]*[○◯]')"
+            )
     # chunk_type: 기본값 'utterance' (qa_pair가 일반 검색에 혼입되지 않도록)
     chunk_type = str(filters.get("chunk_type") or "utterance").strip() if filters else "utterance"
     parts.append("COALESCE(c.metadata->>'chunk_type', 'utterance') = %s")

@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from service.speaker_aliases import has_hanja, normalize_speaker_name
 from service.etl.transform.chunker_v2 import (
     _add_context_window,
     _count_tokens,
@@ -141,7 +142,8 @@ def merge_turns_v2_1(turns: list[dict]) -> list[dict]:
 
 
 def _build_record_v2_1(chunk: dict, source_id: str, doc_hash: str) -> dict:
-    speaker = chunk.get("speaker", "")
+    raw_speaker = str(chunk.get("speaker", "") or "").strip()
+    speaker = normalize_speaker_name(raw_speaker)
     speaker_role = chunk.get("speaker_role", "")
     clean_text = chunk.get("clean_text", "")
     section_type = chunk.get("section_type", "body")
@@ -157,6 +159,11 @@ def _build_record_v2_1(chunk: dict, source_id: str, doc_hash: str) -> dict:
 
     meta = dict(chunk.get("metadata", {}))
     meta["token_count"] = token_count
+    speaker_original = chunk.get("speaker_original") or None
+    if not speaker_original and raw_speaker and raw_speaker != speaker and has_hanja(raw_speaker):
+        speaker_original = raw_speaker
+    if speaker_original:
+        meta["speaker_original"] = speaker_original
     _enrich_speaker_metadata(meta, speaker, speaker_role)
     _enrich_question_type_metadata(meta, clean_text, speaker, speaker_role)
 

@@ -105,11 +105,15 @@ def _fallback_answer(question: str, context: str) -> str:
     )
 
 
+_MAX_CONTEXT_DOCS = int(os.getenv("MAX_CONTEXT_DOCS", "8"))
+
+
 def _build_numbered_context(state: QAState) -> str:
     """LLM에 전달할 문맥을 [n] 번호와 함께 구성한다. 답변에는 raw 메타 키(source= 등)를 노출하지 말라고 시스템에서 지시한다."""
     docs = state.get("reranked") or state.get("retrieved") or []
+    top_k = min(int((state.get("meta") or {}).get("top_k", 6)), _MAX_CONTEXT_DOCS)
     sections: list[str] = []
-    for idx, doc in enumerate(docs[:6], start=1):
+    for idx, doc in enumerate(docs[:top_k], start=1):
         body = (doc.get("chunk_text") or "").strip()
         if not body:
             continue
@@ -192,6 +196,14 @@ def run(state: QAState) -> QAState:
     state.pop("llm_error_kind", None)
     state.pop("generation_skipped", None)
 
+    # 애매한 쿼리 — 명확화 메시지를 답변으로 반환
+    if state.get("meta", {}).get("needs_clarification"):
+        msg = state.get("meta", {}).get("clarification_message", "질문을 더 구체적으로 입력해 주세요.")
+        state["draft_answer"] = msg
+        state["generation_skipped"] = "needs_clarification"
+        logger.info("[Generate] skipped: needs_clarification")
+        return state
+
     # 스트리밍 모드: chat.py가 직접 생성하므로 여기선 스킵
     if state.get("meta", {}).get("skip_generate"):
         state["draft_answer"] = ""
@@ -201,9 +213,11 @@ def run(state: QAState) -> QAState:
 
     if state.get("retrieval_empty"):
         question = state.get("question", "")
+        committee = str((state.get("meta") or {}).get("committee") or "").strip()
+        scope = f"{committee} " if committee else "전체 위원회 "
         state["draft_answer"] = (
             f"죄송합니다. 질문 \"{question}\"에 해당하는 회의록을 찾을 수 없습니다.\n\n"
-            "검색된 외교통일위원회 회의록에 관련 내용이 없거나, "
+            f"{scope}회의록에 관련 내용이 없거나, "
             "질문하신 날짜·인물·주제가 보유 회의록 범위 밖일 수 있습니다. "
             "다른 표현으로 다시 질문해 주세요."
         )

@@ -7,10 +7,29 @@ from service.rag.models.config import EmbeddingModelType
 from service.rag.retrieval.date_range import normalize_meeting_date_range
 from service.rag.retrieval.reranker import create_default_reranker
 from service.rag.vectorstore.pgvector_store import PgVectorStore
+from service.speaker_aliases import speaker_alias_variants
 
 
 _ISSUE_SCORE_BOOST = 0.15
 _IMPORTANCE_BOOST = 0.10
+
+
+def _term_list(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        raw = value
+    elif isinstance(value, str) and value.strip():
+        raw = [value]
+    else:
+        raw = []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
 
 
 def _apply_issue_boost(
@@ -212,6 +231,9 @@ class Retriever:
         party: str | None = None,
         position_type: str | None = None,
         agency: str | None = None,
+        speaker_role: str | None = None,
+        office_terms: list[str] | None = None,
+        office_agencies: list[str] | None = None,
         use_smart_merge: bool = True,
     ) -> list[dict]:
         agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
@@ -427,46 +449,31 @@ class Retriever:
         return overlap / float(len(query_tokens))
 
     def _domain_keyword_boost(self, query: str, content: str) -> float:
-        """질의 핵심 키워드가 문서에 직접 등장하면 소폭 가점한다."""
+        """질의 단어가 본문에 직접 등장하면 소폭 가점 (위원회 무관)."""
         q = (query or "").lower()
         c = (content or "").lower()
         if not q or not c:
             return 0.0
-
-        keyword_groups = [
-            ("한미동맹",),
-            ("북핵", "비핵화"),
-            ("통일부", "장관"),
-            ("정보", "공유", "제한"),
-        ]
-        boost = 0.0
-        for group in keyword_groups:
-            matched = sum(1 for token in group if token in q and token in c)
-            if matched:
-                boost += 0.03 * matched
-        return min(boost, 0.18)
+        tokens = re.findall(r"[가-힣a-zA-Z]{2,}", q)
+        if not tokens:
+            return 0.0
+        matched = sum(1 for t in tokens if t in c)
+        return min(matched / len(tokens) * 0.08, 0.12)
 
     def _phrase_match_boost(self, query: str, content: str) -> float:
-        """자주 평가되는 질문에서 핵심 구가 본문에 그대로 있으면 가점(근접 패턴보다 과적합 줄임)."""
-        q = (query or "").strip()
+        """질의의 연속 단어 조합이 본문에 그대로 있으면 소폭 가점 (위원회 무관)."""
+        q = (query or "").strip().lower()
         c = (content or "").lower()
         if not q or not c:
             return 0.0
-        ql = q.lower()
-        extra = 0.0
-        anchor = 0.0
-        if "정보" in ql and "공유" in ql and "제한" in ql and "정보 공유 제한" in c:
-            extra += 0.055
-        if "통일부" in ql and "장관" in ql:
-            compact_c = "".join(c.split())
-            if "통일부" in c and "장관" in c:
-                extra += 0.025
-                if "통일부장관" in compact_c:
-                    extra += 0.04
-            # 전체 코퍼스에서 소수 문서만 포함(해당 긴급 외통위) — 질의형에서 lexical 역전 보정
-            if ("질의" in ql or "주요" in ql) and "외통위 현안질의" in c:
-                anchor += 0.14
-        return min(extra, 0.12) + anchor
+        words = re.findall(r"[가-힣a-zA-Z]{2,}", q)
+        if len(words) < 2:
+            return 0.0
+        boost = 0.0
+        for i in range(len(words) - 1):
+            if f"{words[i]} {words[i+1]}" in c or words[i] + words[i+1] in c:
+                boost += 0.03
+        return min(boost, 0.09)
 
     def _balance_speakers(self, docs: list[dict], top_k: int) -> list[dict]:
         selected: list[dict] = []
@@ -520,31 +527,29 @@ class Retriever:
         return enriched
 
     def _expand_query(self, query: str) -> str:
+        """기관명+직함 표기 변이를 추가해 복합어 검색 재현율을 높인다 (위원회 무관)."""
         q = (query or "").strip()
         if not q:
             return q
-        expansions: list[str] = []
-        if "한미동맹" in q:
-            expansions.extend(["한미훈련", "북한 반응"])
-        if "북핵" in q and "논의" in q:
-            expansions.extend(["비핵화", "결의안"])
-        if "통일부 장관" in q:
-            expansions.extend(["통일부장관"])
-        if "정보" in q and "공유" in q and "제한" in q:
-            expansions.extend(["대북 정찰정보", "미국 동맹", "정보 공유 제한"])
-        if not expansions:
-            return q
-        return f"{q} {' '.join(expansions)}".strip()
+        # "○○부 장관" → "○○부장관" 붙임 표기 변이 추가
+        expanded = re.sub(
+            r"([가-힣]+부)\s+(장관|차관|원장|청장|처장|위원장)",
+            lambda m: f"{m.group(0)} {m.group(1)}{m.group(2)}",
+            q,
+        )
+        return expanded
 
     def search_v2(
         self,
         query: str,
         top_k: int = 5,
+        alpha: float = 0.75,
         committee: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
         speaker: str | None = None,
         use_neural_reranker: bool = False,
+        balance_speakers: bool = False,
         require_speaker: bool = False,
         question_type: str | None = None,
         utterance_type: str | None = None,
@@ -553,25 +558,32 @@ class Retriever:
         agency: str | None = None,
         use_smart_merge: bool = True,
     ) -> list[dict]:
-        """True Hybrid: vector top-20 + BGE-M3 sparse top-20 → RRF → rerank top-15 → top_k.
-        Dense와 Sparse 검색을 ThreadPoolExecutor로 병렬 실행.
+        """True Hybrid: vector + PostgreSQL FTS → RRF → rerank pool → top_k.
+        alpha(0~1)로 Dense:FTS 후보 비율을 조정. Dense와 FTS를 ThreadPoolExecutor로 병렬 실행.
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         from service.rag.retrieval.date_range import normalize_meeting_date_range
-        from service.rag.retrieval.sparse_index import get_sparse_index
-        from service.rag.models.bge_m3 import encode_sparse
 
-        _DENSE_K = 12
-        _SPARSE_K = 20
-        _RERANK_POOL = 8
+        _TOTAL_CANDS = 50
+        _alpha = max(0.0, min(1.0, alpha))
+        _DENSE_K = max(5, round(_TOTAL_CANDS * _alpha))
+        _SPARSE_K = _TOTAL_CANDS - _DENSE_K
+        _RERANK_POOL = 15
 
         df, dt = normalize_meeting_date_range(date_from, date_to)
+        office_terms_l = _term_list(office_terms)
+        office_agencies_l = _term_list(office_agencies)
         agency_f, utype_f = _resolve_agency_filter(query, question_type, agency, utterance_type)
+        if (speaker_role or office_terms_l) and not agency:
+            agency_f = ""
         filters = {
             "committee": committee or "",
             "date_from": df or "",
             "date_to": dt or "",
             "speaker": speaker or "",
+            "speaker_role": speaker_role or "",
+            "office_terms": office_terms_l,
+            "office_agencies": office_agencies_l,
             "require_speaker": require_speaker,
             "question_type": question_type or "",
             "utterance_type": utype_f,
@@ -597,12 +609,27 @@ class Retriever:
                 "metadata": row.metadata,
             }
 
-        # Dense 검색만 사용 (sparse 인코딩 제거로 ~4s 단축)
+        # Dense(vector) + FTS(PostgreSQL) 병렬 실행 → RRF 병합
         vector = self.encoder.encode_query(query)
-        vec_dicts = [_sr_to_dict(r) for r in self.store.search_similar_v2(vector, top_k=_DENSE_K, filters=filters)]
-        sparse_dicts: list[dict] = []
+        keyword_query = query
+        if speaker:
+            variants = [v for v in speaker_alias_variants(speaker) if v and v not in keyword_query]
+            if variants:
+                keyword_query = " ".join(variants + [keyword_query])
+        office_keyword_terms = [
+            term
+            for term in [speaker_role, *office_terms_l, *office_agencies_l]
+            if term and term not in keyword_query
+        ]
+        if office_keyword_terms:
+            keyword_query = " ".join(office_keyword_terms + [keyword_query])
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_dense = pool.submit(self.store.search_similar_v2, vector, _DENSE_K, filters)
+            fut_fts = pool.submit(self.store.search_keyword_v2, keyword_query, _SPARSE_K, filters)
+            vec_dicts = [_sr_to_dict(r) for r in fut_dense.result()]
+            fts_dicts = [_sr_to_dict(r) for r in fut_fts.result()]
 
-        merged = _rrf_merge(vec_dicts, sparse_dicts, k=60, top_n=_RERANK_POOL)
+        merged = _rrf_merge(vec_dicts, fts_dicts, k=60, top_n=_RERANK_POOL)
 
         for hit in merged:
             hit["hybrid_score"] = hit.get("rrf_score", 0.0)
@@ -612,6 +639,8 @@ class Retriever:
         if use_neural_reranker and merged:
             from service.rag.retrieval.reranker import create_neural_reranker
             merged = create_neural_reranker().rerank(query, merged, top_k=top_k)
+        elif balance_speakers and merged:
+            merged = self._balance_speakers(merged, top_k)
         else:
             merged = merged[:top_k]
 

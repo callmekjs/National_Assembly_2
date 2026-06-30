@@ -9,16 +9,67 @@ from service.rag.query.question_types import (
     get_question_type_spec,
 )
 from service.rag.retrieval.temporal_parser import NationalAssemblyTemporalParser
+from service.office_aliases import match_office_alias, office_query_metadata
 
 logger = logging.getLogger(__name__)
 
 _temporal_parser = NationalAssemblyTemporalParser()
+
+# 애매한 쿼리 감지
+_MEANINGFUL_TOKEN = re.compile(r"[가-힣a-zA-Z]{2,}")
+_PURE_DEICTIC = re.compile(
+    r"^(?:이것|저것|그것|이거|저거|그거|이게|저게|그게|거기|여기|저기|"
+    r"이건|저건|그건|이분|저분|그분|이\s*사람|그\s*사람|저\s*사람)\s*"
+    r"(?:뭐야?|알려줘|해줘|설명해|뭔가요?|뭔지|뭐가요?)?\s*[?？]?$"
+)
+
+
+def _is_too_vague(question: str) -> bool:
+    """의미 있는 정보가 부족한 질문 감지.
+    4자 이상 복합어(대북정책, 한미동맹 등)는 유효 단독 질의로 허용.
+    """
+    q = question.strip()
+    if not q or len(q) <= 2:
+        return True
+    if _PURE_DEICTIC.match(q):
+        return True
+    tokens = _MEANINGFUL_TOKEN.findall(q)
+    if not tokens:
+        return True
+    # 단일 짧은 토큰(2자 이하)만 있으면 vague — 3자+ 단어는 도메인 키워드로 허용
+    if len(tokens) == 1 and len(tokens[0]) <= 2:
+        return True
+    return False
+
+
+def _build_clarification_message() -> str:
+    return (
+        "질문이 너무 간략하거나 검색 대상이 명확하지 않습니다.\n\n"
+        "다음과 같이 구체적으로 질문해 주시면 정확한 답변이 가능합니다.\n\n"
+        "**포함하면 좋은 정보**\n"
+        "- 인물 이름 또는 직함 (예: 조태열 장관, 김석기 위원장)\n"
+        "- 주제 키워드 (예: 대북정책, 한미동맹, 방위비분담, 공정거래)\n"
+        "- 시기 (예: 2024년 국감, 올해 2월)\n\n"
+        "**질문 예시**\n"
+        "- \"조태열 장관이 한미동맹에 대해 발언한 내용이 있나요?\"\n"
+        "- \"2024년 국감에서 대북정책 관련 여야 입장 차이는?\"\n"
+        "- \"방송통신위원장이 공영방송 독립성에 대해 어떤 입장인가요?\""
+    )
 
 # 질문에 특정 문서·보고서 이름이 포함됐는지 감지
 _DOC_NAME_PATTERN = re.compile(
     "[‘’“”「」'\"]"  # 따옴표류
     r"|"
     r"(?:보고서|로드맵|백서|계획서|협약서|합의문|성명서|선언문|결의문)"
+)
+
+# 집계형 쿼리 감지: "어떤 의원들이 X를 주장했나", "위원들이 공통적으로" 등
+# 특정 화자가 아니라 여러 화자를 집계하는 쿼리 → balance_speakers + top_k 증가
+_AGGREGATION_PATTERNS = re.compile(
+    r"(?:어떤|어느|각|모든)\s*(?:의원|위원|정치인)들?"
+    r"|(?:의원|위원)들이\s*(?:공통|제기|주장|지적|요구|발언|어떻게|무엇을|어떤)"
+    r"|(?:의원|위원)들은\s*(?:어떻게|왜|무엇을|어떤|서로)"
+    r"|공통적으로\s*(?:제기|주장|지적|요구)",
 )
 
 # 여야 비교 쿼리 감지
@@ -33,13 +84,52 @@ _COMPARISON_VERBS = re.compile(
 )
 
 # 단독 발언자 질문 감지: 직함+이름 또는 이름+직함 패턴
+# P1/P3에서 이름 자리를 {2,3}으로 제한 — 한국 인명은 2-3자이며,
+# {2,4}는 조사("은/는/이/가")나 수식어("여야","여러")까지 캡처해 오탐 유발
 _SPEAKER_UNIT = re.compile(
-    # 직함 + 이름 순서 (예: "위원장 김석기")
-    r"(?:장관|의원|위원장|위원|차관|총장|원장|대표|의장)\s+[가-힣]{2,4}"
+    # P1: 직함 + 이름 순서 (예: "위원장 김석기") — 이름 2-3자 한정
+    r"(?:장관|의원|위원장|위원(?!회)|차관|총장|원장|대표|의장)\s+[가-힣]{2,3}"
     r"|"
-    # 이름/부처 + 직함 순서 (예: "통일부 장관", "조태열 장관")
-    r"(?:[가-힣]{2,4}\s+)?(?:[가-힣]+부\s*)?(?:장관|의원|위원장|위원|차관|총장|원장|대표|의장)"
+    # P2: 이름 + 전/현[직] + [부처]직함 (예: "조태열 전 외교부장관")
+    r"[가-힣]{2,4}\s+(?:전|현|전직|현직)\s+(?:[가-힣]+부\s*)?(?:장관|의원|위원장|위원(?!회)|차관|총장|원장|대표|의장)"
+    r"|"
+    # P3: [이름\s+]?[부처]?직함 (예: "조태열 장관", "외교부장관") — 이름 2-3자 한정
+    # (?<![가-힣]): 이름 슬롯이 단어 중간(예: "국민의힘"의 "의힘")에서 시작하지 않도록 부정 후방탐색
+    # 위원(?!회): "위원회"의 일부를 화자 직함으로 오탐하지 않도록 부정 전방탐색
+    r"(?:(?<![가-힣])[가-힣]{2,3}\s+)?(?:[가-힣]+부\s*)?(?:장관|의원|위원장|위원(?!회)|차관|총장|원장|대표|의장)"
 )
+
+# 발언자 인명 검증용 상수
+_NON_NAME_KW = frozenset({
+    "장관", "의원", "위원장", "위원", "차관", "총장", "원장", "대표", "의장",
+    "소위원장", "수석", "처장", "국장", "사무총장", "후보자", "후보",
+})
+_ORG_SUFFIX = ("부", "처", "청")
+_COMMON_NON_NAME = frozenset({
+    "여야", "여당", "야당", "여러", "일부", "많은", "일각",
+    "어떤", "어느", "모든", "아무",  # 지시 한정사 — 인명 오탐 방지
+})
+_PARTICLE_ENDINGS = ("은", "는", "이", "가", "를", "을", "의", "에", "서", "로", "며", "다", "고", "지")
+
+
+def _is_valid_person_name_kw(kw_list: list[str]) -> bool:
+    """키워드 목록에 실제 인명이 포함되어 있는지 확인.
+    직함어·조사·수식어·정당명 등을 제외하고 2-3자 인명이 남는지 검사한다.
+    """
+    for kw in kw_list:
+        if kw in _NON_NAME_KW:
+            continue
+        if kw in _COMMON_NON_NAME:
+            continue
+        if any(kw.endswith(s) for s in _ORG_SUFFIX):
+            continue
+        if any(kw.endswith(p) for p in _PARTICLE_ENDINGS):
+            continue
+        if len(kw) > 3:  # 4자 이상은 조사·부처명 혼입 가능성 높음
+            continue
+        if len(kw) >= 2:
+            return True
+    return False
 
 
 def _is_party_comparison_query(question: str) -> bool:
@@ -56,21 +146,29 @@ def _is_party_comparison_query(question: str) -> bool:
 def _extract_query_speaker_kw(question: str) -> list[str]:
     """단독 발언자 질문에서 발언 주체 키워드 추출.
     0개(발언 주체 없음)나 2개 이상(비교 질문)이면 빈 목록 반환.
+    인명 검증 실패 시(수식어·조사·정당명 등)도 빈 목록 반환.
     """
     matches = [m.group(0) for m in _SPEAKER_UNIT.finditer(question)]
     if len(matches) != 1:
         return []
-    return [t for t in re.findall(r"[가-힣]{2,}", matches[0])]
+    kws = [t for t in re.findall(r"[가-힣]{2,}", matches[0])]
+    if not _is_valid_person_name_kw(kws):
+        return []
+    return kws
 
 
 def _extract_comparison_subjects(question: str) -> list[list[str]]:
     """비교 질문(정확히 2명)에서 각 주체의 키워드 목록 반환.
     예: "조태열 장관과 정동영 장관" → [["조태열", "장관"], ["정동영", "장관"]]
+    두 주체 중 하나라도 인명 검증에 실패하면 빈 목록 반환.
     """
     matches = [m.group(0) for m in _SPEAKER_UNIT.finditer(question)]
     if len(matches) != 2:
         return []
-    return [[t for t in re.findall(r"[가-힣]{2,}", m)] for m in matches]
+    subjects = [[t for t in re.findall(r"[가-힣]{2,}", m)] for m in matches]
+    if not all(_is_valid_person_name_kw(s) for s in subjects):
+        return []
+    return subjects
 
 
 def run(state: QAState) -> QAState:
@@ -86,6 +184,14 @@ def run(state: QAState) -> QAState:
     state["meta"] = {**defaults(), **incoming}
 
     question = state.get("question", "")
+
+    # 애매한 쿼리 감지 — 명확화 메시지 요청
+    if question and _is_too_vague(question):
+        state["meta"]["needs_clarification"] = True
+        state["meta"]["clarification_message"] = _build_clarification_message()
+        logger.info("Router: too_vague query detected → needs_clarification")
+        return state
+
     if question and _DOC_NAME_PATTERN.search(question):
         state["meta"]["doc_name_query"] = True
         logger.info("Router: doc_name_query detected")
@@ -105,6 +211,22 @@ def run(state: QAState) -> QAState:
             if comparison:
                 state["meta"]["query_comparison_subjects"] = comparison
                 logger.info("Router: query_comparison_subjects=%s", comparison)
+
+        office_key = match_office_alias(question)
+        if office_key:
+            state["meta"].update(office_query_metadata(office_key))
+            state["meta"]["require_speaker"] = True
+            logger.info("Router: query_office_kw=%s", office_key)
+
+        # 집계형 쿼리 감지 → balance_speakers 활성화 + top_k 확대
+        # 특정 화자 없이 여러 의원/위원의 의견을 묻는 쿼리
+        if not state["meta"].get("aggregate_query") and _AGGREGATION_PATTERNS.search(question):
+            state["meta"]["aggregate_query"] = True
+            if not state["meta"].get("balance_speakers"):
+                state["meta"]["balance_speakers"] = True
+            if state["meta"].get("top_k", 5) < 8:
+                state["meta"]["top_k"] = 8
+            logger.info("Router: aggregate_query detected → balance_speakers=True, top_k≥8")
 
         # 여야 비교 쿼리 감지 → balance_speakers 자동 활성화
         # UI에서 이미 켠 경우엔 그대로 유지

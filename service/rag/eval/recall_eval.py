@@ -49,9 +49,13 @@ def evaluate(
     score_gap = top1_score - avg_score
 
     # diversity: unique speaker / k
+    # speaker는 최상위 키 또는 metadata 안에 있을 수 있음
     speakers = set()
     for doc in top:
-        sp = str((doc.get("metadata") or {}).get("speaker", "")).strip()
+        sp = (
+            str(doc.get("speaker") or "").strip()
+            or str((doc.get("metadata") or {}).get("speaker", "")).strip()
+        )
         if sp:
             speakers.add(sp)
     diversity = len(speakers) / len(top) if top else 0.0

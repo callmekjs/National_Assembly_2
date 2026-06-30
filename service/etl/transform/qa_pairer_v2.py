@@ -138,6 +138,7 @@ def _pair_single_source(source_id: str, chunks: list[dict]) -> list[dict]:
     utterance_chunks = [
         c for c in chunks
         if c.get("metadata", {}).get("chunk_type", "utterance") == "utterance"
+        and c.get("section_type", "body") == "body"
     ]
 
     pairs: list[dict] = []

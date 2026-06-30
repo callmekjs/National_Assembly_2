@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from service.speaker_aliases import has_hanja, normalize_speaker_name
+
 ROOT = Path(__file__).resolve().parents[3]
 NORM_DIR = ROOT / "data" / "v2" / "transform" / "normalized"
 OUT_DIR = ROOT / "data" / "v2" / "transform" / "turns"
@@ -12,6 +14,8 @@ _ROLE_SUFFIXES = (
     "수석전문위원",
     "전문위원",
     "소위원장",
+    "공직후보자",
+    "후보자",
     "위원장",
     "사무처장",
     "본부장",
@@ -31,22 +35,23 @@ _ROLE_SUFFIXES = (
     "청장",
     "실장",
     "차장",
+    "후보",
 )
 _ROLE_SUFFIX_RE = "|".join(re.escape(s) for s in _ROLE_SUFFIXES)
 _ROLE_RE = rf"[가-힣A-Za-z0-9·ㆍ-]{{0,35}}(?:{_ROLE_SUFFIX_RE})"
-_NAME_RE = r"[가-힣]{2,4}"
+_NAME_RE = r"[가-힣\u3400-\u9fff\uf900-\ufaff]{2,4}"
 
 _SPEAKER_PATTERNS = (
     # ◯외교부장관 조태열 ... / ◯위원장 김석기 ...
-    re.compile(rf"^◯\s*(?P<role>{_ROLE_RE})\s+(?P<speaker>{_NAME_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
+    re.compile(rf"^[○◯]\s*(?P<role>{_ROLE_RE})\s+(?P<speaker>{_NAME_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
     # ◯외교부장관조태열 ... 처럼 OCR이 공백을 잃은 경우
-    re.compile(rf"^◯\s*(?P<role>{_ROLE_RE})(?P<speaker>{_NAME_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
+    re.compile(rf"^[○◯]\s*(?P<role>{_ROLE_RE})(?P<speaker>{_NAME_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
     # ◯조태열 장관 ... / ◯김석기 위원장 ...
-    re.compile(rf"^◯\s*(?P<speaker>{_NAME_RE})\s+(?P<role>{_ROLE_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
+    re.compile(rf"^[○◯]\s*(?P<speaker>{_NAME_RE})\s+(?P<role>{_ROLE_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
     # ◯조태열장관 ... 처럼 OCR이 공백을 잃은 경우
-    re.compile(rf"^◯\s*(?P<speaker>{_NAME_RE})(?P<role>{_ROLE_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
+    re.compile(rf"^[○◯]\s*(?P<speaker>{_NAME_RE})(?P<role>{_ROLE_RE})(?=\s|$)(?P<body>.*)", re.DOTALL),
     # ◯정부측 ... / ◯의안 ... 등 인물명이 아닌 진행 표지도 일단 보존
-    re.compile(r"^◯\s*(?P<speaker>[가-힣A-Za-z0-9·ㆍ-]{2,20})(?=\s|$)(?P<body>.*)", re.DOTALL),
+    re.compile(r"^[○◯]\s*(?P<speaker>[가-힣A-Za-z0-9·ㆍ\-\u3400-\u9fff\uf900-\ufaff]{2,20})(?=\s|$)(?P<body>.*)", re.DOTALL),
 )
 
 
@@ -58,7 +63,7 @@ def _parse_speaker_marker(segment: str) -> tuple[str, str, str] | None:
         speaker = (m.groupdict().get("speaker") or "").strip()
         role = (m.groupdict().get("role") or "").strip()
         body = (m.groupdict().get("body") or "").strip()
-        return speaker, role, body
+        return normalize_speaker_name(speaker), role, body
     return None
 
 
@@ -70,7 +75,7 @@ def extract_turns(
     default_role: str = "",
 ) -> list[dict]:
     turns: list[dict] = []
-    parts = re.split(r"(?=◯)", clean_text)
+    parts = re.split(r"(?=[○◯])", clean_text)
     for part in parts:
         part = part.strip()
         if not part:
@@ -91,7 +96,7 @@ def extract_turns(
         speaker, role, body = parsed
         if not body:
             continue
-        turns.append({
+        turn = {
             "source_id": source_id,
             "page_no": page_no,
             "turn_index": len(turns),
@@ -99,7 +104,12 @@ def extract_turns(
             "speaker_role": role,
             "section_type": "body",
             "clean_text": body,
-        })
+        }
+        raw_marker = part.split(body, 1)[0] if body else part
+        raw_hanja = re.search(r"[\u3400-\u9fff\uf900-\ufaff]{2,5}", raw_marker)
+        if raw_hanja and has_hanja(raw_hanja.group(0)):
+            turn["speaker_original"] = raw_hanja.group(0)
+        turns.append(turn)
     return turns
 
 

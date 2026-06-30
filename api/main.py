@@ -34,6 +34,11 @@ import threading
 
 from fastapi import FastAPI, HTTPException
 from service.rag.query.question_types import infer_utterance_type as _infer_utype
+from service.speaker_aliases import (
+    has_hanja,
+    normalize_speaker_aliases_in_text,
+    normalize_speaker_name,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -90,7 +95,7 @@ def _query_cache_set(key: str, payload: dict) -> None:
 
 app = FastAPI(
     title="국회 회의록 RAG API",
-    description="외교통일위원회 회의록 기반 근거 인용 질의응답",
+    description="국회 위원회 회의록 기반 근거 인용 질의응답",
     version="1.0.0",
 )
 
@@ -116,6 +121,8 @@ class QueryRequest(BaseModel):
 class Citation(BaseModel):
     index: int
     speaker: Optional[str] = None
+    speaker_original: Optional[str] = None
+    speaker_role: Optional[str] = None
     date: Optional[str] = None
     committee: Optional[str] = None
     content_preview: Optional[str] = None
@@ -130,9 +137,12 @@ class QueryResponse(BaseModel):
     grounding_level: str
     doc_count: int
     citations: list[Citation]
+    citation_sort: str = "relevance"
     latency_total_ms: float
     latency_retrieve_ms: Optional[float] = None
     latency_generate_ms: Optional[float] = None
+    committee_distribution: Optional[dict] = None
+    generation_skipped: Optional[str] = None
 
 
 class MeetingItem(BaseModel):
@@ -250,6 +260,12 @@ def _build_citation(index: int, cit: dict) -> Citation:
     source_path = str(cit.get("source_path") or "").strip()
     page_raw = cit.get("page_no")
     page = int(page_raw) if page_raw is not None else None
+    raw_speaker = str(cit.get("speaker") or "").strip()
+    speaker = normalize_speaker_name(raw_speaker)
+    speaker_role = str(cit.get("speaker_role") or "").strip()
+    speaker_original = cit.get("speaker_original") or (
+        raw_speaker if raw_speaker and raw_speaker != speaker and has_hanja(raw_speaker) else None
+    )
     pdf_url = None
     pdf_download_url = None
     if source_id and source_path and _lookup_pdf_path(source_id):
@@ -257,7 +273,9 @@ def _build_citation(index: int, cit: dict) -> Citation:
         pdf_download_url = f"/pdfs/{source_id}/download"
     return Citation(
         index=index,
-        speaker=cit.get("speaker") or None,
+        speaker=speaker or None,
+        speaker_original=speaker_original,
+        speaker_role=speaker_role or None,
         date=cit.get("date") or None,
         committee=cit.get("committee") or None,
         content_preview=preview or None,
@@ -334,8 +352,10 @@ def query(req: QueryRequest):
     t_generate_end: Optional[float] = None
 
     try:
+        from service.rag.query.history_resolver import resolve as _resolve_history
+        _question = normalize_speaker_aliases_in_text(_resolve_history(req.question, req.history or []))
         t_retrieve_start = time.perf_counter()
-        result = graph.invoke({"question": req.question, "meta": meta})
+        result = graph.invoke({"question": _question, "meta": meta})
         t_end = time.perf_counter()
 
         # latency_ms가 state에 기록된 경우 활용
@@ -344,7 +364,9 @@ def query(req: QueryRequest):
         t_generate_ms = latency_info.get("generate_ms") or None
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"파이프라인 오류: {e}")
+        import traceback, logging as _log
+        _log.getLogger(__name__).exception("[/query] pipeline error")
+        raise HTTPException(status_code=500, detail=f"파이프라인 오류: {type(e).__name__}: {e}")
 
     t_total_ms = (t_end - t_start) * 1000
 
@@ -363,6 +385,8 @@ def query(req: QueryRequest):
             "source_id": doc.get("source_id", ""),
             "date": meta_doc.get("meeting_date") or doc.get("date"),
             "speaker": doc.get("speaker"),
+            "speaker_original": meta_doc.get("speaker_original"),
+            "speaker_role": doc.get("speaker_role") or meta_doc.get("speaker_role"),
             "committee": meta_doc.get("committee"),
             "quote": preview,
             "chunk_text": doc.get("chunk_text") or doc.get("content") or "",
@@ -402,14 +426,18 @@ def query(req: QueryRequest):
     except Exception:
         pass
 
+    _meta = result.get("meta") or {}
     return QueryResponse(
         answer=answer,
         grounding_level=grounding_level,
         doc_count=len(docs),
         citations=citations,
+        citation_sort=_meta.get("citation_sort") or "relevance",
         latency_total_ms=round(t_total_ms, 1),
         latency_retrieve_ms=round(t_retrieve_ms, 1) if t_retrieve_ms else None,
         latency_generate_ms=round(t_generate_ms, 1) if t_generate_ms else None,
+        committee_distribution=_meta.get("committee_distribution") or None,
+        generation_skipped=result.get("generation_skipped") or None,
     )
 
 
@@ -442,6 +470,8 @@ def _citations_from_result(result: dict) -> list[Citation]:
                 "source_id": doc.get("source_id", ""),
                 "date": meta_doc.get("meeting_date") or doc.get("date"),
                 "speaker": doc.get("speaker"),
+                "speaker_original": meta_doc.get("speaker_original"),
+                "speaker_role": doc.get("speaker_role") or meta_doc.get("speaker_role"),
                 "committee": meta_doc.get("committee"),
                 "quote": preview,
                 "chunk_text": doc.get("chunk_text") or doc.get("content") or "",
@@ -463,9 +493,11 @@ def query_stream(req: QueryRequest):
             from service.llm.prompt_templates import build_system_prompt, build_user_prompt, needs_reasoning_model
             from datetime import date
 
+            _request_question = normalize_speaker_aliases_in_text(req.question)
+
             # 캐시 확인 (히스토리 없는 단발성 질문만 캐시)
             _use_cache = not req.history
-            _cache_key = _query_cache_key(req.question, req.committee or "", req.top_k)
+            _cache_key = _query_cache_key(_request_question, req.committee or "", req.top_k)
             if _use_cache:
                 cached = _query_cache_get(_cache_key)
                 if cached:
@@ -481,10 +513,20 @@ def query_stream(req: QueryRequest):
                 "use_neural_reranker": True,
                 "use_v2_retrieval": True,
             }
-            state: dict = {"question": req.question, "meta": meta}
+            from service.rag.query.history_resolver import resolve as _resolve_history
+            _question = normalize_speaker_aliases_in_text(_resolve_history(req.question, req.history or []))
+            state: dict = {"question": _question, "meta": meta}
 
             # 파이프라인: 검색 → context 구성
             state = router.run(state)
+
+            # 애매한 쿼리 — 명확화 메시지를 즉시 반환
+            if (state.get("meta") or {}).get("needs_clarification"):
+                msg = (state.get("meta") or {}).get("clarification_message", "질문을 더 구체적으로 입력해 주세요.")
+                t_total_ms = round((time.perf_counter() - t_start) * 1000, 1)
+                yield f"data: {json.dumps({'type': 'done', 'answer': msg, 'grounding': 'NONE', 'citations': [], 'citation_sort': 'relevance', 'latency': t_total_ms, 'needs_clarification': True, 'clarification_question': msg}, ensure_ascii=False)}\n\n"
+                return
+
             state = query_rewrite.run(state)
             state = retrieve_pg.run(state)
             state = rerank.run(state)
@@ -492,9 +534,9 @@ def query_stream(req: QueryRequest):
 
             # 존재 여부 질문: 전제 검증 먼저 — 없으면 스트리밍 스킵
             from graph.nodes.generate import _verify_claim, _REFUSAL_ANSWER, _is_existence_query
-            if _is_existence_query(req.question):
+            if _is_existence_query(_question):
                 _ctx = state.get("context", "")
-                if not _verify_claim(req.question, _ctx):
+                if not _verify_claim(_question, _ctx):
                     t_total_ms = round((time.perf_counter() - t_start) * 1000, 1)
                     yield f"data: {json.dumps({'type': 'done', 'answer': _REFUSAL_ANSWER, 'grounding': 'REFUSED', 'citations': [], 'latency': t_total_ms}, ensure_ascii=False)}\n\n"
                     return
@@ -515,7 +557,7 @@ def query_stream(req: QueryRequest):
                 committee=_committee,
             )
 
-            _reasoning = needs_reasoning_model(req.question, committee=_committee)
+            _reasoning = needs_reasoning_model(_question, committee=_committee)
             _gen_model = os.getenv("OPENAI_REASONING_MODEL", "gpt-4o") if _reasoning else None
 
             # 질문 유형에 따른 적응형 max_tokens
@@ -571,12 +613,16 @@ def query_stream(req: QueryRequest):
 
             t_total_ms = round((time.perf_counter() - t_start) * 1000, 1)
 
+            _done_meta = state.get("meta") or {}
             done_payload = {
                 "type": "done",
                 "answer": final_answer,
                 "grounding": state.get("grounding_level", "NONE"),
                 "citations": [c.model_dump() for c in citations],
+                "citation_sort": _done_meta.get("citation_sort") or "relevance",
                 "latency": t_total_ms,
+                "committee_distribution": _done_meta.get("committee_distribution") or None,
+                "generation_skipped": state.get("generation_skipped") or None,
             }
             # 정상 답변만 캐시 (히스토리 없는 요청, REFUSED 제외)
             if _use_cache and state.get("grounding_level") != "REFUSED":
@@ -798,63 +844,193 @@ def pdf_viewer(source_id: str, page: int = 1, search: str = ""):
     }}
 
     async function highlight(page, canvas, vp, search, scale) {{
-      const tc  = await page.getTextContent();
+      const tc = await page.getTextContent();
       const ctx = canvas.getContext('2d');
-
-      /* 전처리: 공백 제거한 연결 문자열 + 각 아이템의 위치 (발언자 줄 제외) */
-      const norm  = s => s.replace(/\\s+/g, '').toLowerCase();
-      const needle = norm(search.slice(0, 60));
+      const norm = s => String(s || '').replace(/\\s+/g, '').toLowerCase();
+      const needle = norm(search).slice(0, 90);
       if (!needle) return 0;
 
-      let concat = '';
-      const spans = [];
+      const boxes = [];
       for (const item of tc.items) {{
-        if (!item.str) continue;
-        /* 발언자 이름 줄(○장관 조태열 등)은 하이라이트 대상에서 제외 */
-        if (isSpeakerLabel(item.str)) continue;
-        const n = norm(item.str);
-        spans.push({{ s: concat.length, e: concat.length + n.length, item }});
-        concat += n;
+        if (!item.str || !String(item.str).trim()) continue;
+        const box = getItemBox(item, vp, scale);
+        if (box) boxes.push(box);
+      }}
+      if (!boxes.length) return 0;
+
+      const lines = buildLines(boxes, norm);
+      if (!lines.length) return 0;
+
+      let concat = '';
+      for (const line of lines) {{
+        line.start = concat.length;
+        concat += line.norm + '\\n';
+        line.end = concat.length;
       }}
 
-      /* 문자열 검색 */
-      const idx = concat.indexOf(needle.slice(0, Math.min(20, needle.length)));
-      let count = 0;
+      const matchedLines = findLineMatches(lines, concat, needle, search, norm);
+      if (!matchedLines.size) return 0;
+
+      const highlightLines = expandMatchedLines(lines, matchedLines);
 
       ctx.save();
-      ctx.fillStyle = 'rgba(255, 215, 0, 0.45)';
-
-      if (idx !== -1) {{
-        const end = idx + needle.length;
-        for (const sp of spans) {{
-          if (sp.e <= idx || sp.s >= end) continue;
-          drawItem(ctx, sp.item, vp, scale);
-          count++;
-        }}
-      }}
-
-      /* fallback: 단어 단위 매칭 (발언자 줄 제외) */
-      if (count === 0) {{
-        const words = search.split(/\\s+/).filter(w => w.length > 2);
-        for (const sp of spans) {{
-          const t = sp.item.str.toLowerCase();
-          if (words.some(w => t.includes(w.toLowerCase()))) {{
-            drawItem(ctx, sp.item, vp, scale);
-            count++;
-          }}
-        }}
-      }}
-
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.26)';
+      for (const lineIndex of highlightLines) drawLine(ctx, lines[lineIndex]);
+      ctx.fillStyle = 'rgba(255, 215, 0, 0.38)';
+      for (const lineIndex of matchedLines) drawLine(ctx, lines[lineIndex]);
       ctx.restore();
-      return count;
+
+      return highlightLines.size;
     }}
 
-    function drawItem(ctx, item, vp, scale) {{
+    function getItemBox(item, vp, scale) {{
       const tx = pdfjsLib.Util.transform(vp.transform, item.transform);
-      const h = Math.hypot(tx[2], tx[3]);   /* font height in canvas px */
-      /* item.width is in PDF user-space units (pt); multiply by viewport scale */
-      const w = Math.max(item.width * scale, h * 0.4);
-      ctx.fillRect(tx[4], tx[5] - h * 1.0, w, h * 1.15);
+      const h = Math.max(Math.hypot(tx[2], tx[3]), 8);
+      const w = Math.max((item.width || 0) * scale, h * 0.4);
+      return {{
+        x: tx[4],
+        y: tx[5] - h,
+        w,
+        h: h * 1.18,
+        right: tx[4] + w,
+        bottom: tx[5] - h + h * 1.18,
+        cy: tx[5] - h * 0.5,
+        str: item.str,
+        speakerOnly: isSpeakerLabel(item.str) && String(item.str).trim().length <= 18,
+      }};
+    }}
+
+    function buildLines(boxes, norm) {{
+      boxes.sort((a, b) => a.cy - b.cy || a.x - b.x);
+      const lines = [];
+
+      for (const box of boxes) {{
+        const last = lines[lines.length - 1];
+        const tolerance = Math.max(3, (last ? Math.max(last.avgH, box.h) : box.h) * 0.55);
+        if (last && Math.abs(last.cy - box.cy) <= tolerance) {{
+          last.items.push(box);
+          last.cy = (last.cy * (last.items.length - 1) + box.cy) / last.items.length;
+          last.avgH = (last.avgH * (last.items.length - 1) + box.h) / last.items.length;
+        }} else {{
+          lines.push({{ items: [box], cy: box.cy, avgH: box.h }});
+        }}
+      }}
+
+      for (const line of lines) {{
+        line.items.sort((a, b) => a.x - b.x);
+        const drawable = line.items.filter(item => !item.speakerOnly);
+        const sourceItems = drawable.length ? drawable : line.items;
+        line.text = line.items.map(item => item.str).join(' ');
+        line.norm = norm(sourceItems.map(item => item.str).join(' '));
+        line.x = Math.min(...sourceItems.map(item => item.x));
+        line.y = Math.min(...sourceItems.map(item => item.y));
+        line.right = Math.max(...sourceItems.map(item => item.right));
+        line.bottom = Math.max(...sourceItems.map(item => item.bottom));
+        line.startsWithSpeaker = /^[○◯]/.test(line.text.trim());
+      }}
+
+      let speakerGroup = 0;
+      for (const line of lines) {{
+        if (line.startsWithSpeaker) speakerGroup += 1;
+        line.speakerGroup = speakerGroup;
+      }}
+
+      return lines;
+    }}
+
+    function findLineMatches(lines, concat, needle, rawSearch, norm) {{
+      const out = new Set();
+      const seeds = buildNeedleSeeds(needle);
+
+      for (const seed of seeds) {{
+        const idx = concat.indexOf(seed);
+        if (idx === -1) continue;
+        addOverlapLines(lines, out, idx, seed.length);
+        if (out.size) return out;
+      }}
+
+      const words = Array.from(new Set(String(rawSearch || '')
+        .split(/\\s+/)
+        .map(norm)
+        .filter(word => word.length >= 2)));
+      if (!words.length) return out;
+
+      const minHits = words.length >= 3 ? 2 : 1;
+      lines.forEach((line, index) => {{
+        const hits = words.reduce((sum, word) => sum + (line.norm.includes(word) ? 1 : 0), 0);
+        if (hits >= minHits) out.add(index);
+      }});
+      return out;
+    }}
+
+    function buildNeedleSeeds(needle) {{
+      const seeds = [needle];
+      if (needle.length > 32) {{
+        seeds.push(needle.slice(0, 32));
+        const mid = Math.floor((needle.length - 32) / 2);
+        seeds.push(needle.slice(mid, mid + 32));
+        seeds.push(needle.slice(-32));
+      }}
+      if (needle.length > 18) {{
+        for (let i = 0; i + 18 <= needle.length && seeds.length < 8; i += 12) {{
+          seeds.push(needle.slice(i, i + 18));
+        }}
+      }}
+      return Array.from(new Set(seeds.filter(seed => seed.length >= 8)));
+    }}
+
+    function addOverlapLines(lines, out, start, length) {{
+      const end = start + length;
+      lines.forEach((line, index) => {{
+        if (line.end > start && line.start < end) out.add(index);
+      }});
+    }}
+
+    function expandMatchedLines(lines, matchedLines) {{
+      const expanded = new Set();
+      const ordered = Array.from(matchedLines).sort((a, b) => a - b);
+      const maxLines = 5;
+
+      for (const index of ordered) {{
+        let start = index;
+        let end = index;
+
+        while (start > 0 && end - start + 1 < maxLines) {{
+          const prev = lines[start - 1];
+          if (prev.startsWithSpeaker && !matchedLines.has(start - 1)) break;
+          if (!shouldMergeLines(prev, lines[start])) break;
+          start -= 1;
+        }}
+
+        while (end < lines.length - 1 && end - start + 1 < maxLines) {{
+          const next = lines[end + 1];
+          if (next.startsWithSpeaker && !matchedLines.has(end + 1)) break;
+          if (!shouldMergeLines(lines[end], next)) break;
+          end += 1;
+        }}
+
+        for (let i = start; i <= end; i += 1) expanded.add(i);
+      }}
+
+      return expanded;
+    }}
+
+    function shouldMergeLines(a, b) {{
+      if (a.speakerGroup !== b.speakerGroup) return false;
+      const gap = Math.max(0, b.y - a.bottom);
+      const maxGap = Math.max(a.avgH, b.avgH) * 1.15;
+      const indentGap = Math.abs(a.x - b.x);
+      return gap <= maxGap && indentGap <= 90;
+    }}
+
+    function drawLine(ctx, line) {{
+      const padX = 5;
+      const padY = Math.max(2, line.avgH * 0.18);
+      const x = Math.max(0, line.x - padX);
+      const y = Math.max(0, line.y - padY);
+      const w = Math.min(ctx.canvas.width - x, line.right - line.x + padX * 2);
+      const h = Math.min(ctx.canvas.height - y, line.bottom - line.y + padY * 2);
+      ctx.fillRect(x, y, w, h);
     }}
   </script>
 </body>
@@ -941,8 +1117,20 @@ def _extract_issue_tags(texts: list[str]) -> list[str]:
             if any(kw in combined for kw in keywords)]
 
 
+def _normalize_speaker_row(row: dict, key: str = "speaker") -> dict:
+    out = dict(row)
+    raw = str(out.get(key) or "").strip()
+    normalized = normalize_speaker_name(raw)
+    if normalized:
+        out[key] = normalized
+    if raw and raw != normalized and has_hanja(raw):
+        out.setdefault(f"{key}_original", raw)
+    return out
+
+
 class SpeakerStat(BaseModel):
     speaker: str
+    speaker_original: Optional[str] = None
     speaker_role: Optional[str] = None
     party: Optional[str] = None
     position_type: Optional[str] = None
@@ -967,6 +1155,7 @@ class MeetingOverview(BaseModel):
 class TurnItem(BaseModel):
     turn_index: Optional[int] = None
     speaker: Optional[str] = None
+    speaker_original: Optional[str] = None
     speaker_role: Optional[str] = None
     party: Optional[str] = None
     position_type: Optional[str] = None
@@ -979,6 +1168,7 @@ class TurnItem(BaseModel):
 class QAPair(BaseModel):
     q_turn_index: Optional[int] = None
     q_speaker: Optional[str] = None
+    q_speaker_original: Optional[str] = None
     q_speaker_role: Optional[str] = None
     q_party: Optional[str] = None
     q_preview: str
@@ -987,6 +1177,7 @@ class QAPair(BaseModel):
     q_page_no: Optional[int] = None
     a_turn_index: Optional[int] = None
     a_speaker: Optional[str] = None
+    a_speaker_original: Optional[str] = None
     a_speaker_role: Optional[str] = None
     a_preview: str
     a_full_text: str = ""
@@ -1042,6 +1233,7 @@ def meeting_overview(meeting_key: str):
                 # 주요 발언자 top 10
                 cur.execute(f"""
                     SELECT speaker, speaker_role,
+                           metadata->>'speaker_original' AS speaker_original,
                            metadata->>'party' AS party,
                            metadata->>'position_type' AS position_type,
                            COUNT(*) AS turn_count
@@ -1049,11 +1241,11 @@ def meeting_overview(meeting_key: str):
                     WHERE {where_sql}
                       AND section_type = 'body'
                       AND speaker IS NOT NULL AND speaker <> ''
-                    GROUP BY speaker, speaker_role, party, position_type
+                    GROUP BY speaker, speaker_role, speaker_original, party, position_type
                     ORDER BY turn_count DESC
                     LIMIT 10
                 """, where_params)
-                top_speakers = [SpeakerStat(**r) for r in cur.fetchall()]
+                top_speakers = [SpeakerStat(**_normalize_speaker_row(dict(r))) for r in cur.fetchall()]
 
                 # 쟁점 태그용 텍스트 수집
                 cur.execute(f"""
@@ -1096,6 +1288,7 @@ def meeting_turns(meeting_key: str, limit: int = 300):
                     SELECT
                         turn_index,
                         speaker,
+                        metadata->>'speaker_original' AS speaker_original,
                         speaker_role,
                         metadata->>'party'          AS party,
                         metadata->>'position_type'  AS position_type,
@@ -1112,7 +1305,7 @@ def meeting_turns(meeting_key: str, limit: int = 300):
                 rows = cur.fetchall()
         if not rows:
             raise HTTPException(status_code=404, detail=f"{meeting_key} 회의 데이터가 없습니다.")
-        return [TurnItem(**r) for r in rows]
+        return [TurnItem(**_normalize_speaker_row(dict(r))) for r in rows]
     except HTTPException:
         raise
     except Exception as e:
@@ -1309,6 +1502,7 @@ def _build_qa_blocks(rows: list[dict]) -> list[dict]:
         re_inferred = _infer_utype(full_text, speaker_role=speaker_role, position_type=position_type)
         blocks.append({
             "speaker": turn.get("speaker"),
+            "speaker_original": turn.get("speaker_original"),
             "speaker_role": speaker_role,
             "party": turn.get("party"),
             "position_type": position_type,
@@ -1350,6 +1544,7 @@ def meeting_qa_pairs(meeting_key: str):
                     SELECT
                         turn_index,
                         speaker,
+                        metadata->>'speaker_original' AS speaker_original,
                         speaker_role,
                         metadata->>'party'          AS party,
                         metadata->>'position_type'  AS position_type,
@@ -1364,7 +1559,7 @@ def meeting_qa_pairs(meeting_key: str):
                     ORDER BY turn_index ASC NULLS LAST, id ASC
                     LIMIT 500
                 """, where_params)
-                rows = [dict(r) for r in cur.fetchall()]
+                rows = [_normalize_speaker_row(dict(r)) for r in cur.fetchall()]
 
         if not rows:
             raise HTTPException(status_code=404, detail=f"{meeting_key} 회의 데이터가 없습니다.")
@@ -1435,6 +1630,7 @@ def meeting_qa_pairs(meeting_key: str):
             pairs.append(QAPair(
                 q_turn_index=block["turn_index"],
                 q_speaker=block["speaker"],
+                q_speaker_original=block.get("speaker_original"),
                 q_speaker_role=block["speaker_role"],
                 q_party=block["party"],
                 q_preview=block["preview"],
@@ -1443,6 +1639,7 @@ def meeting_qa_pairs(meeting_key: str):
                 q_page_no=block.get("page_no"),
                 a_turn_index=best["nxt"]["turn_index"],
                 a_speaker=best["nxt"]["speaker"],
+                a_speaker_original=best["nxt"].get("speaker_original"),
                 a_speaker_role=best["nxt"]["speaker_role"],
                 a_preview=best["nxt"]["preview"],
                 a_full_text=best["nxt"]["full_text"],
