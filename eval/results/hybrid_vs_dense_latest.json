@@ -1,0 +1,522 @@
+[
+  {
+    "id": "eval_001",
+    "query": "조태열 장관은 트럼프 2기 출범에 대해 어떤 외교적 준비를 언급했나요?",
+    "committee": "외교통일위원회",
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0078,
+      "diversity": 1.0,
+      "avg_similarity": 0.4081,
+      "score_key_used": "hybrid_score",
+      "latency_s": 3.53
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.4,
+      "avg_similarity": 0.6742,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.192
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_002",
+    "query": "홍기원 위원은 오물풍선 문제에 대해 어떤 입장을 보였나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.8,
+      "score_gap": 0.0002,
+      "diversity": 0.6,
+      "avg_similarity": 0.3925,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.928
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.6,
+      "score_gap": 0.0005,
+      "diversity": 0.2,
+      "avg_similarity": 0.6222,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.446
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_003",
+    "query": "김준형 위원은 한국 외교 정책에 대해 어떤 비판적 의견을 제시했나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0112,
+      "diversity": 0.8,
+      "avg_similarity": 0.3935,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.341
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.4,
+      "avg_similarity": 0.6416,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.272
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_004",
+    "query": "윤후덕 위원은 재외국민 보호와 관련해 어떤 질문이나 주장을 했나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.6,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.2615,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.313
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.2,
+      "score_gap": 0.0005,
+      "diversity": 0.2,
+      "avg_similarity": 0.6194,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.277
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_005",
+    "query": "조현 외교부장관은 한미동맹에 대해 어떤 원칙과 입장을 밝혔나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.2951,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.374
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.8,
+      "score_gap": 0.0005,
+      "diversity": 0.4,
+      "avg_similarity": 0.6805,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.352
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_006",
+    "query": "이재강 위원은 대북전단 살포 문제에 대해 어떤 입장을 취했나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0108,
+      "diversity": 0.4,
+      "avg_similarity": 0.4378,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.389
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.2,
+      "avg_similarity": 0.7012,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.317
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_007",
+    "query": "정동영 통일부장관은 남북 대화 가능성에 대해 어떤 입장을 밝혔나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.2978,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.307
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.6,
+      "avg_similarity": 0.6967,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.277
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_008",
+    "query": "김영배 소위원장이 외교 현안과 관련해 어떤 발언을 했나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.3004,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.321
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.2,
+      "avg_similarity": 0.7015,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.278
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_009",
+    "query": "트럼프 2기 행정부 출범에 대한 외교부의 대응 방침은 무엇인가요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0029,
+      "diversity": 0.8,
+      "avg_similarity": 0.5895,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.31
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.8,
+      "avg_similarity": 0.6519,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.282
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_010",
+    "query": "비핵화에 대한 외교통일위원회의 논의 내용을 요약해 주세요.",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.8,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.2947,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.323
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.2,
+      "score_gap": 0.0005,
+      "diversity": 0.6,
+      "avg_similarity": 0.6883,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.287
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_011",
+    "query": "대북전단 살포에 대한 정부의 입장과 의회의 반응은 어떠했나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0127,
+      "diversity": 0.8,
+      "avg_similarity": 0.2869,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.34
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.8,
+      "avg_similarity": 0.6538,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.352
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_012",
+    "query": "한미동맹 강화를 위해 외교통일위원회에서 어떤 구체적 방안들이 논의되었나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.8,
+      "score_gap": 0.008,
+      "diversity": 0.8,
+      "avg_similarity": 0.5274,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.346
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.6,
+      "score_gap": 0.0005,
+      "diversity": 0.6,
+      "avg_similarity": 0.6668,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.37
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_013",
+    "query": "재외국민 보호를 위한 정부의 구체적 방안으로 어떤 것들이 언급되었나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 1.0,
+      "avg_similarity": 0.3921,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.393
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 1.0,
+      "avg_similarity": 0.6285,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.392
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_014",
+    "query": "계엄 선포 이후 외교통일위원회에서 논의된 외교적 영향은 무엇인가요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0089,
+      "diversity": 0.8,
+      "avg_similarity": 0.5246,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.331
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.8,
+      "avg_similarity": 0.667,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.335
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_015",
+    "query": "여야 의원들의 대북전단 살포에 대한 시각은 어떻게 다른가요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0075,
+      "diversity": 0.8,
+      "avg_similarity": 0.4024,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.325
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.6,
+      "avg_similarity": 0.669,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.293
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_016",
+    "query": "조태열 전 외교부장관과 조현 현 외교부장관의 한미동맹에 대한 접근 방식 차이가 있나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 0.8,
+      "avg_similarity": 0.262,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.332
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.8,
+      "score_gap": 0.0005,
+      "diversity": 0.6,
+      "avg_similarity": 0.6112,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.327
+    },
+    "winner": "Hybrid ✓"
+  },
+  {
+    "id": "eval_017",
+    "query": "트럼프 관세 문제에 대한 여당과 야당의 대응 전략 차이는 무엇인가요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.007,
+      "diversity": 1.0,
+      "avg_similarity": 0.4776,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.335
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 1.0,
+      "avg_similarity": 0.6152,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.277
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_018",
+    "query": "김영호 전 통일부장관과 정동영 현 통일부장관의 북한 정책에서 어떤 차이가 있나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0002,
+      "diversity": 1.0,
+      "avg_similarity": 0.3714,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.322
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 0.8,
+      "avg_similarity": 0.5996,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.309
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_019",
+    "query": "오물풍선 문제에 대한 정부 입장과 야당 의원들의 비판적 시각을 비교해 주세요.",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0099,
+      "diversity": 0.8,
+      "avg_similarity": 0.3659,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.392
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0005,
+      "diversity": 1.0,
+      "avg_similarity": 0.5968,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.349
+    },
+    "winner": "동률"
+  },
+  {
+    "id": "eval_020",
+    "query": "2025년 7월 14일 외교통일위원회에서 어떤 주요 주제들이 다뤄졌나요?",
+    "committee": null,
+    "hybrid": {
+      "k": 5,
+      "total": 4,
+      "keyword_hit_rate": 1.0,
+      "score_gap": 0.0074,
+      "diversity": 0.75,
+      "avg_similarity": 0.4911,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.314
+    },
+    "dense": {
+      "k": 5,
+      "total": 5,
+      "keyword_hit_rate": 0.6,
+      "score_gap": 0.0005,
+      "diversity": 1.0,
+      "avg_similarity": 0.6529,
+      "score_key_used": "hybrid_score",
+      "latency_s": 0.368
+    },
+    "winner": "Hybrid ✓"
+  }
+]
